@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"html/template"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -21,6 +24,7 @@ import (
 	"api-fuzzer/internal/generator"
 	"api-fuzzer/internal/minimizer"
 	"api-fuzzer/internal/progress"
+	"api-fuzzer/internal/session"
 	"api-fuzzer/internal/spec"
 	"api-fuzzer/internal/types"
 )
@@ -59,6 +63,9 @@ type RunConfig struct {
 	DiffURL             string
 	DiffTimeThreshold   time.Duration
 	RegressionOut       string
+	SessionDir          string
+	Resume              string
+	ListSessions        bool
 }
 
 type ReportConfig struct {
@@ -168,11 +175,11 @@ func newRunCmd() *cobra.Command {
 		Use:   "run",
 		Short: "运行API模糊测试",
 		Long: `基于 OpenAPI 规范文件运行 API 模糊测试，自动生成测试用例并执行，
-收集异常结果并生成报告。`,
+收集异常结果并生成报告。支持会话(session)管理、断点续跑和历史会话查看。`,
 		RunE: runFuzz,
 	}
 
-	cmd.Flags().StringVar(&runCfg.Spec, "spec", "", "OpenAPI规范文件路径 (必填)")
+	cmd.Flags().StringVar(&runCfg.Spec, "spec", "", "OpenAPI规范文件路径 (必填，使用--resume时可省略)")
 	cmd.Flags().StringVar(&runCfg.BaseURL, "base-url", "", "覆盖Server地址")
 	cmd.Flags().IntVar(&runCfg.Concurrency, "concurrency", defaultConcurrency, "并发数 (默认10, 最大100)")
 	cmd.Flags().IntVar(&runCfg.RateLimit, "rate-limit", 0, "每秒请求速率限制 (0=无限)")
@@ -188,12 +195,13 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&runCfg.IncludePaths, "include-paths", nil, "包含路径正则 (可多次)")
 	cmd.Flags().StringSliceVar(&runCfg.ExcludePaths, "exclude-paths", nil, "排除路径正则 (可多次)")
 	cmd.Flags().BoolVar(&runCfg.DryRun, "dry-run", false, "只生成用例不发送请求")
-	cmd.Flags().StringVar(&runCfg.StateFile, "state-file", "", "断点续跑状态文件路径")
+	cmd.Flags().StringVar(&runCfg.StateFile, "state-file", "", "断点续跑状态文件路径 (已废弃，使用session管理)")
 	cmd.Flags().StringVar(&runCfg.DiffURL, "diff-url", "", "差分测试的第二服务器地址")
 	cmd.Flags().DurationVar(&runCfg.DiffTimeThreshold, "diff-time-threshold", defaultDiffThreshold, "差分测试响应时间阈值 (默认2s)")
 	cmd.Flags().StringVar(&runCfg.RegressionOut, "regression-out", "", "运行结束后保存回归用例到此文件")
-
-	_ = cmd.MarkFlagRequired("spec")
+	cmd.Flags().StringVar(&runCfg.SessionDir, "session-dir", session.DefaultSessionRoot(), "会话存储根目录")
+	cmd.Flags().StringVar(&runCfg.Resume, "resume", "", "恢复执行: 不带参数恢复最近一次中断的session; 带参数恢复指定session目录名")
+	cmd.Flags().BoolVar(&runCfg.ListSessions, "list-sessions", false, "列出所有历史session及其状态")
 
 	return cmd
 }
@@ -237,6 +245,10 @@ func newRegressionCmd() *cobra.Command {
 }
 
 func runFuzz(cmd *cobra.Command, args []string) error {
+	if runCfg.ListSessions {
+		return printSessionsList(runCfg.SessionDir)
+	}
+
 	startTime = time.Now()
 
 	if runCfg.Concurrency > maxConcurrency {
@@ -252,6 +264,96 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	authTokens, err := buildAuthTokens(runCfg.AuthTokens, runCfg.BearerToken, runCfg.APIKey, runCfg.BasicAuth)
 	if err != nil {
 		return fmt.Errorf("解析认证配置失败: %w", err)
+	}
+
+	var sess *session.Session
+	var isResume bool
+
+	if cmd.Flags().Changed("resume") {
+		isResume = true
+		if runCfg.Resume == "" {
+			sess, err = session.FindLatestInterrupted(runCfg.SessionDir)
+			if err != nil {
+				return fmt.Errorf("查找最近中断的session失败: %w", err)
+			}
+		} else {
+			resumePath := runCfg.Resume
+			if !filepath.IsAbs(resumePath) {
+				resumePath = filepath.Join(runCfg.SessionDir, resumePath)
+			}
+			sess, err = session.Load(resumePath)
+			if err != nil {
+				return fmt.Errorf("加载session失败: %w", err)
+			}
+		}
+		if !sess.CanResume() {
+			return fmt.Errorf("session %s 状态为 %s，无法恢复 (仅interrupted/created状态可恢复)", sess.SessionName, sess.Progress.Status)
+		}
+		fmt.Printf("恢复session: %s (状态: %s, 已完成 %d/%d, 异常 %d)\n",
+			sess.SessionName, sess.Progress.Status, sess.Progress.CompletedCases, sess.Progress.TotalCases, sess.Progress.AnomalyCount)
+
+		if runCfg.Spec == "" {
+			runCfg.Spec = sess.Config.SpecPath
+		}
+		if runCfg.BaseURL == "" {
+			runCfg.BaseURL = sess.Config.BaseURL
+		}
+		if runCfg.Concurrency == 0 || runCfg.Concurrency == defaultConcurrency {
+			runCfg.Concurrency = sess.Config.Concurrency
+		}
+		if runCfg.RateLimit == 0 {
+			runCfg.RateLimit = sess.Config.RateLimit
+		}
+		if runCfg.Timeout == 0 || runCfg.Timeout == defaultTimeout {
+			runCfg.Timeout = sess.Config.Timeout
+		}
+		if len(runCfg.IncludePaths) == 0 {
+			runCfg.IncludePaths = sess.Config.IncludePaths
+		}
+		if len(runCfg.ExcludePaths) == 0 {
+			runCfg.ExcludePaths = sess.Config.ExcludePaths
+		}
+		if runCfg.MaxCasesPerEndpoint == 0 {
+			runCfg.MaxCasesPerEndpoint = sess.Config.MaxCasesPerEndpoint
+		}
+		if runCfg.SeverityThreshold == "" || runCfg.SeverityThreshold == "low" {
+			runCfg.SeverityThreshold = sess.Config.SeverityThreshold
+		}
+		if runCfg.DiffURL == "" {
+			runCfg.DiffURL = sess.Config.DiffURL
+		}
+		if runCfg.DiffTimeThreshold == 0 || runCfg.DiffTimeThreshold == defaultDiffThreshold {
+			runCfg.DiffTimeThreshold = sess.Config.DiffTimeThreshold
+		}
+		if len(sess.Config.AuthTokens) > 0 && len(authTokens) == 0 {
+			authTokens = sess.Config.AuthTokens
+		}
+		severityThreshold = parseSeverity(runCfg.SeverityThreshold)
+	} else {
+		if runCfg.Spec == "" {
+			return fmt.Errorf("--spec 是必填参数 (使用--resume时可省略)")
+		}
+		sess, err = session.New(runCfg.Spec, runCfg.SessionDir)
+		if err != nil {
+			return fmt.Errorf("创建session失败: %w", err)
+		}
+		sess.Config.BaseURL = runCfg.BaseURL
+		sess.Config.Concurrency = runCfg.Concurrency
+		sess.Config.RateLimit = runCfg.RateLimit
+		sess.Config.Timeout = runCfg.Timeout
+		sess.Config.AuthTokens = authTokens
+		sess.Config.IncludePaths = runCfg.IncludePaths
+		sess.Config.ExcludePaths = runCfg.ExcludePaths
+		sess.Config.MaxCasesPerEndpoint = runCfg.MaxCasesPerEndpoint
+		sess.Config.SeverityThreshold = runCfg.SeverityThreshold
+		sess.Config.DiffURL = runCfg.DiffURL
+		sess.Config.DiffTimeThreshold = runCfg.DiffTimeThreshold
+		sess.Config.DryRun = runCfg.DryRun
+		if err := sess.SaveConfig(); err != nil {
+			return fmt.Errorf("保存session配置失败: %w", err)
+		}
+		fmt.Printf("创建session: %s\n", sess.SessionName)
+		fmt.Printf("  目录: %s\n", sess.DirPath)
 	}
 
 	fmt.Printf("[1/6] 加载 OpenAPI 规范: %s\n", runCfg.Spec)
@@ -280,6 +382,8 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	if baseURL == "" {
 		return fmt.Errorf("未指定base-url且OpenAPI规范中无server地址")
 	}
+	sess.Config.BaseURL = baseURL
+	_ = sess.SaveConfig()
 
 	fmt.Printf("[3/6] 生成测试用例\n")
 	var allTestCases []*types.TestCase
@@ -309,7 +413,35 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		return allTestCases[i].ID < allTestCases[j].ID
 	})
 
+	for _, tc := range allTestCases {
+		sess.AddCaseToManifest(tc)
+	}
+	if err := sess.SaveManifest(); err != nil {
+		fmt.Printf("  警告: 保存用例清单失败: %v\n", err)
+	}
+
 	fmt.Printf("  共生成 %d 个测试用例\n", len(allTestCases))
+	sess.Progress.TotalCases = len(allTestCases)
+
+	if isResume && len(sess.Progress.CompletedCaseIDs) > 0 {
+		completedSet := sess.GetCompletedCaseIDs()
+		remainingCases := make([]*types.TestCase, 0, len(allTestCases))
+		for _, tc := range allTestCases {
+			if tc == nil {
+				continue
+			}
+			if _, done := completedSet[tc.ID]; !done {
+				remainingCases = append(remainingCases, tc)
+			}
+		}
+		skipped := len(allTestCases) - len(remainingCases)
+		if skipped > 0 {
+			fmt.Printf("  断点续跑: 跳过已完成的 %d 个用例，剩余 %d 个待执行\n", skipped, len(remainingCases))
+		}
+		allTestCases = remainingCases
+	}
+
+	_ = sess.SaveProgress()
 
 	if runCfg.DryRun {
 		sort.Slice(perEndpoint, func(i, j int) bool {
@@ -359,8 +491,31 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println()
 		fmt.Println("未实际发送请求")
+		_ = sess.SetStatus(session.StatusCompleted)
 		return nil
 	}
+
+	appendMode := isResume
+	if err := sess.OpenAnomalyWriter(appendMode); err != nil {
+		return fmt.Errorf("打开异常写入器失败: %w", err)
+	}
+	defer sess.CloseAnomalyWriter()
+
+	if err := sess.SetStatus(session.StatusRunning); err != nil {
+		fmt.Printf("  警告: 更新session状态失败: %v\n", err)
+	}
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Println()
+		fmt.Println("检测到中断信号，正在保存状态...")
+		_ = sess.SetStatus(session.StatusInterrupted)
+		_ = sess.SaveProgress()
+		_ = sess.CloseAnomalyWriter()
+		os.Exit(130)
+	}()
 
 	fmt.Printf("[4/6] 执行测试用例\n")
 	execConfig := &executor.ExecutorConfig{
@@ -378,6 +533,15 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	if runCfg.StateFile != "" {
 		exec.SetStateFile(runCfg.StateFile)
 	}
+
+	exec.SetCaseCompleteCallback(func(tc *types.TestCase, completed int, total int) {
+		if tc != nil {
+			_ = sess.IncrementProgress(tc.ID)
+		}
+	})
+	exec.SetAnomalyCallback(func(a *types.Anomaly) {
+		_ = sess.AppendAnomaly(a)
+	})
 
 	pb := progress.NewProgressBar(len(allTestCases))
 	pb.Start()
@@ -402,6 +566,13 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	if execErr != nil && execErr != context.Canceled {
 		fmt.Printf("  执行过程出现错误: %v\n", execErr)
 	}
+
+	storedAnomalies, readErr := sess.ReadAnomalies()
+	if readErr != nil {
+		fmt.Printf("  警告: 读取已保存异常失败: %v\n", readErr)
+	} else {
+		allAnomalies = storedAnomalies
+	}
 	fmt.Printf("  执行完成，发现 %d 个异常\n", len(allAnomalies))
 
 	var diffAnomalies []*types.Anomaly
@@ -414,6 +585,9 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 			fmt.Printf("  差分测试错误: %v\n", err)
 		} else {
 			fmt.Printf("  差分测试完成，发现 %d 个差异\n", len(diffAnomalies))
+			for _, a := range diffAnomalies {
+				_ = sess.AppendAnomaly(a)
+			}
 			allAnomalies = append(allAnomalies, diffAnomalies...)
 		}
 	}
@@ -485,7 +659,15 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if execErr == context.Canceled {
+		_ = sess.SetStatus(session.StatusInterrupted)
+	} else {
+		_ = sess.SetStatus(session.StatusCompleted)
+	}
+	_ = sess.SaveProgress()
+
 	printSummary(validAnomalies)
+	fmt.Printf("Session目录: %s\n", sess.DirPath)
 	return nil
 }
 
@@ -1041,4 +1223,57 @@ func printSummary(anomalies []*types.Anomaly) {
 		fmt.Printf("总耗时: %s\n", s.Duration)
 	}
 
+}
+
+func printSessionsList(sessionRoot string) error {
+	sessions, err := session.ListSessions(sessionRoot)
+	if err != nil {
+		return fmt.Errorf("列出session失败: %w", err)
+	}
+
+	if len(sessions) == 0 {
+		fmt.Println("暂无历史session")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SESSION名称\t状态\tSpec文件\t开始时间\t完成度\t异常数")
+	fmt.Fprintln(w, strings.Repeat("-", 100))
+
+	for _, s := range sessions {
+		statusStr := formatStatus(s.Status)
+		completion := formatCompletion(s.CompletedCases, s.TotalCases)
+		startTimeStr := s.StartTime.Format("2006-01-02 15:04:05")
+		specFile := s.SpecFileName
+		if specFile == "" {
+			specFile = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
+			s.Name, statusStr, specFile, startTimeStr, completion, s.AnomalyCount)
+	}
+
+	return w.Flush()
+}
+
+func formatStatus(status session.SessionStatus) string {
+	switch status {
+	case session.StatusCreated:
+		return "已创建"
+	case session.StatusRunning:
+		return "运行中"
+	case session.StatusCompleted:
+		return "已完成"
+	case session.StatusInterrupted:
+		return "已中断"
+	default:
+		return string(status)
+	}
+}
+
+func formatCompletion(completed, total int) string {
+	if total <= 0 {
+		return fmt.Sprintf("%d/0 (0.0%%)", completed)
+	}
+	percent := float64(completed) / float64(total) * 100
+	return fmt.Sprintf("%d/%d (%.1f%%)", completed, total, percent)
 }

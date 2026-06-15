@@ -48,6 +48,9 @@ type stateFileData struct {
 	SavedAt      time.Time `json:"savedAt"`
 }
 
+type CaseCompleteCallback func(tc *types.TestCase, completed int, total int)
+type AnomalyCallback func(a *types.Anomaly)
+
 type Executor struct {
 	config      *ExecutorConfig
 	client      *http.Client
@@ -56,6 +59,9 @@ type Executor struct {
 	progress    *progress.ProgressBar
 	det         *detpkg.Detector
 	stateFile   string
+
+	caseCompleteCb CaseCompleteCallback
+	anomalyCb      AnomalyCallback
 
 	mu            sync.Mutex
 	anomalies     []*types.Anomaly
@@ -135,6 +141,14 @@ func (e *Executor) SetStateFile(path string) {
 	e.stateFile = path
 }
 
+func (e *Executor) SetCaseCompleteCallback(cb CaseCompleteCallback) {
+	e.caseCompleteCb = cb
+}
+
+func (e *Executor) SetAnomalyCallback(cb AnomalyCallback) {
+	e.anomalyCb = cb
+}
+
 func (e *Executor) loadState() error {
 	if e.stateFile == "" {
 		return nil
@@ -204,6 +218,9 @@ func (e *Executor) addAnomaly(a *types.Anomaly) {
 	e.mu.Unlock()
 	if e.progress != nil {
 		e.progress.AddAnomaly()
+	}
+	if e.anomalyCb != nil {
+		e.anomalyCb(a)
 	}
 }
 
@@ -289,6 +306,12 @@ func (e *Executor) Run(
 			e.markCompleted(tc.ID)
 			if e.progress != nil {
 				e.progress.Increment(1)
+			}
+			if e.caseCompleteCb != nil {
+				e.mu.Lock()
+				completed := len(e.completedList)
+				e.mu.Unlock()
+				e.caseCompleteCb(tc, completed, total)
 			}
 
 			if atomic.AddInt64(&saveCounter, 1)%saveInterval == 0 {
