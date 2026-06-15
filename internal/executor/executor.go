@@ -385,12 +385,13 @@ func (e *Executor) executeTestCase(
 	}
 	if err := auth.InjectAuth(&req, authConfigs, e.config.AuthTokens); err != nil {
 		anom := &types.Anomaly{
-			ID:         fmt.Sprintf("auth-error-%s", tc.ID),
-			TestCaseID: tc.ID,
-			Type:       types.AnomalyConnectionError,
-			Severity:   types.SeverityMedium,
-			Message:    fmt.Sprintf("auth injection failed: %v", err),
-			Timestamp:  time.Now(),
+			ID:              fmt.Sprintf("auth-error-%s", tc.ID),
+			TestCaseID:      tc.ID,
+			Type:            types.AnomalyConnectionError,
+			Severity:        types.SeverityMedium,
+			Message:         fmt.Sprintf("auth injection failed: %v", err),
+			MutationSources: tc.MutationSources,
+			Timestamp:       time.Now(),
 		}
 		return nil, []*types.Anomaly{anom}
 	}
@@ -398,12 +399,13 @@ func (e *Executor) executeTestCase(
 	reqURL, err := e.buildURL(&req)
 	if err != nil {
 		anom := &types.Anomaly{
-			ID:         fmt.Sprintf("url-error-%s", tc.ID),
-			TestCaseID: tc.ID,
-			Type:       types.AnomalyConnectionError,
-			Severity:   types.SeverityMedium,
-			Message:    fmt.Sprintf("invalid URL: %v", err),
-			Timestamp:  time.Now(),
+			ID:              fmt.Sprintf("url-error-%s", tc.ID),
+			TestCaseID:      tc.ID,
+			Type:            types.AnomalyConnectionError,
+			Severity:        types.SeverityMedium,
+			Message:         fmt.Sprintf("invalid URL: %v", err),
+			MutationSources: tc.MutationSources,
+			Timestamp:       time.Now(),
 		}
 		return nil, []*types.Anomaly{anom}
 	}
@@ -416,12 +418,13 @@ func (e *Executor) executeTestCase(
 	httpReq, err := http.NewRequestWithContext(ctx, string(req.Method), reqURL, bodyReader)
 	if err != nil {
 		anom := &types.Anomaly{
-			ID:         fmt.Sprintf("req-error-%s", tc.ID),
-			TestCaseID: tc.ID,
-			Type:       types.AnomalyConnectionError,
-			Severity:   types.SeverityMedium,
-			Message:    fmt.Sprintf("build request failed: %v", err),
-			Timestamp:  time.Now(),
+			ID:              fmt.Sprintf("req-error-%s", tc.ID),
+			TestCaseID:      tc.ID,
+			Type:            types.AnomalyConnectionError,
+			Severity:        types.SeverityMedium,
+			Message:         fmt.Sprintf("build request failed: %v", err),
+			MutationSources: tc.MutationSources,
+			Timestamp:       time.Now(),
 		}
 		return nil, []*types.Anomaly{anom}
 	}
@@ -460,27 +463,29 @@ func (e *Executor) executeTestCase(
 
 		if isTimeout {
 			anomalies = append(anomalies, &types.Anomaly{
-				ID:          fmt.Sprintf("timeout-%s", tc.ID),
-				TestCaseID:  tc.ID,
-				Type:        types.AnomalyTimeout,
-				Severity:    types.SeverityHigh,
-				Message:     fmt.Sprintf("request timed out after %v", elapsed),
-				Description: doErr.Error(),
-				Request:     &req,
-				Response:    resp,
-				Timestamp:   time.Now(),
+				ID:              fmt.Sprintf("timeout-%s", tc.ID),
+				TestCaseID:      tc.ID,
+				Type:            types.AnomalyTimeout,
+				Severity:        types.SeverityHigh,
+				Message:         fmt.Sprintf("request timed out after %v", elapsed),
+				Description:     doErr.Error(),
+				Request:         &req,
+				Response:        resp,
+				MutationSources: tc.MutationSources,
+				Timestamp:       time.Now(),
 			})
 		} else {
 			anomalies = append(anomalies, &types.Anomaly{
-				ID:          fmt.Sprintf("conn-error-%s", tc.ID),
-				TestCaseID:  tc.ID,
-				Type:        types.AnomalyConnectionError,
-				Severity:    types.SeverityHigh,
-				Message:     fmt.Sprintf("connection error: %v", doErr),
-				Description: doErr.Error(),
-				Request:     &req,
-				Response:    resp,
-				Timestamp:   time.Now(),
+				ID:              fmt.Sprintf("conn-error-%s", tc.ID),
+				TestCaseID:      tc.ID,
+				Type:            types.AnomalyConnectionError,
+				Severity:        types.SeverityHigh,
+				Message:         fmt.Sprintf("connection error: %v", doErr),
+				Description:     doErr.Error(),
+				Request:         &req,
+				Response:        resp,
+				MutationSources: tc.MutationSources,
+				Timestamp:       time.Now(),
 			})
 		}
 		return resp, anomalies
@@ -505,17 +510,18 @@ func (e *Executor) executeTestCase(
 	var anomalies []*types.Anomaly
 	if resp.StatusCode >= 500 && resp.StatusCode < 600 {
 		anomalies = append(anomalies, &types.Anomaly{
-			ID:          fmt.Sprintf("servererr-%s", tc.ID),
-			TestCaseID:  tc.ID,
-			Type:        types.AnomalyServerError,
-			Severity:    types.SeverityCritical,
-			Message:     fmt.Sprintf("server error: HTTP %d", resp.StatusCode),
-			Description: http.StatusText(resp.StatusCode),
-			Request:     &req,
-			Response:    resp,
-			APIPath:     tc.APIPath,
-			APIMethod:   tc.APIMethod,
-			Timestamp:   time.Now(),
+			ID:              fmt.Sprintf("servererr-%s", tc.ID),
+			TestCaseID:      tc.ID,
+			Type:            types.AnomalyServerError,
+			Severity:        types.SeverityCritical,
+			Message:         fmt.Sprintf("server error: HTTP %d", resp.StatusCode),
+			Description:     http.StatusText(resp.StatusCode),
+			Request:         &req,
+			Response:        resp,
+			APIPath:         tc.APIPath,
+			APIMethod:       tc.APIMethod,
+			MutationSources: tc.MutationSources,
+			Timestamp:       time.Now(),
 		})
 	}
 
@@ -538,6 +544,9 @@ func (e *Executor) executeTestCase(
 				}
 				if a.APIMethod == "" {
 					a.APIMethod = tc.APIMethod
+				}
+				if a.MutationSources == nil || len(a.MutationSources) == 0 {
+					a.MutationSources = tc.MutationSources
 				}
 			}
 			anomalies = append(anomalies, detected...)

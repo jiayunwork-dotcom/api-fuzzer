@@ -23,7 +23,10 @@ import (
 	"api-fuzzer/internal/executor"
 	"api-fuzzer/internal/generator"
 	"api-fuzzer/internal/minimizer"
+	"api-fuzzer/internal/mutator"
+	"api-fuzzer/internal/plugin"
 	"api-fuzzer/internal/progress"
+	"api-fuzzer/internal/regression"
 	"api-fuzzer/internal/session"
 	"api-fuzzer/internal/spec"
 	"api-fuzzer/internal/types"
@@ -67,6 +70,7 @@ type RunConfig struct {
 	Resume              bool
 	ResumeFrom          string
 	ListSessions        bool
+	PluginDir           string
 }
 
 type ReportConfig struct {
@@ -83,6 +87,11 @@ type RegressionConfig struct {
 	AuthTokens []string
 	Output     string
 	Format     []string
+}
+
+type PluginCmdConfig struct {
+	Dir      string
+	InitName string
 }
 
 type ReportData struct {
@@ -113,6 +122,7 @@ var (
 	runCfg    RunConfig
 	reportCfg ReportConfig
 	regCfg    RegressionConfig
+	pluginCfg PluginCmdConfig
 	startTime time.Time
 )
 
@@ -142,6 +152,7 @@ func Execute() error {
 	rootCmd.AddCommand(newReportCmd())
 	rootCmd.AddCommand(newRegressionCmd())
 	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.AddCommand(newPluginCmd())
 
 	return rootCmd.Execute()
 }
@@ -204,6 +215,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&runCfg.Resume, "resume", false, "恢复最近一次中断的session")
 	cmd.Flags().StringVar(&runCfg.ResumeFrom, "resume-from", "", "恢复指定session目录名")
 	cmd.Flags().BoolVar(&runCfg.ListSessions, "list-sessions", false, "列出所有历史session及其状态")
+	cmd.Flags().StringVar(&runCfg.PluginDir, "plugin-dir", plugin.DefaultPluginDir, "插件目录路径")
 
 	return cmd
 }
@@ -243,6 +255,61 @@ func newRegressionCmd() *cobra.Command {
 
 	_ = cmd.MarkFlagRequired("cases")
 
+	return cmd
+}
+
+func newPluginCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "plugin",
+		Short: "变异插件管理",
+		Long:  "管理变异策略插件，包括列出插件、验证插件、生成插件模板等。",
+	}
+
+	cmd.PersistentFlags().StringVar(&pluginCfg.Dir, "plugin-dir", plugin.DefaultPluginDir, "插件目录路径")
+
+	cmd.AddCommand(newPluginListCmd())
+	cmd.AddCommand(newPluginValidateCmd())
+	cmd.AddCommand(newPluginInitCmd())
+
+	return cmd
+}
+
+func newPluginListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "列出所有已安装插件",
+		Long:  "扫描插件目录，显示所有已发现插件的名称、优先级、支持类型和自检状态。",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return plugin.ListPlugins(pluginCfg.Dir)
+		},
+	}
+}
+
+func newPluginValidateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate",
+		Short: "验证所有插件",
+		Long:  "对插件目录下所有插件执行Validate检查，报告哪些可用哪些有问题。",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return plugin.ValidatePlugins(pluginCfg.Dir)
+		},
+	}
+}
+
+func newPluginInitCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "生成插件模板",
+		Long:  "在插件目录下生成一个Go插件源文件模板，包含接口实现骨架和构建说明。",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if pluginCfg.InitName == "" {
+				return fmt.Errorf("--name 参数必填")
+			}
+			return plugin.CreatePluginTemplate(pluginCfg.Dir, pluginCfg.InitName)
+		},
+	}
+	cmd.Flags().StringVar(&pluginCfg.InitName, "name", "", "插件名称 (必填)")
+	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
 
@@ -387,6 +454,27 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	sess.Config.BaseURL = baseURL
 	_ = sess.SaveConfig()
 
+	fmt.Printf("[2.5/6] 加载变异插件\n")
+	pluginLoader := plugin.NewLoader(runCfg.PluginDir)
+	loadedPlugins, loadErr := pluginLoader.Load()
+	if loadErr != nil {
+		fmt.Printf("  警告: 加载插件过程出错: %v\n", loadErr)
+	}
+	validCount := 0
+	for _, p := range loadedPlugins {
+		if p.Valid {
+			validCount++
+			fmt.Printf("  已加载插件: %s (优先级: %d, 类型: %v)\n",
+				p.Name, p.Priority, p.SupportedTypes)
+		}
+	}
+	if len(loadedPlugins) == 0 {
+		fmt.Println("  未发现外部插件，仅使用内置变异器")
+	} else {
+		fmt.Printf("  共加载 %d 个插件，%d 个可用\n", len(loadedPlugins), validCount)
+	}
+	mutationEngine := mutator.NewMutationEngine(pluginLoader)
+
 	fmt.Printf("[3/6] 生成测试用例\n")
 	var allTestCases []*types.TestCase
 	type endpointStats struct {
@@ -397,8 +485,9 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	var perEndpoint []endpointStats
 	for _, api := range filteredSpecs {
 		cases, genErr := generator.GenerateTestCasesWithOptions(api, runCfg.MaxCasesPerEndpoint, baseURL, generator.GeneratorOptions{
-			IncludePaths: runCfg.IncludePaths,
-			ExcludePaths: runCfg.ExcludePaths,
+			IncludePaths:   runCfg.IncludePaths,
+			ExcludePaths:   runCfg.ExcludePaths,
+			MutationEngine: mutationEngine,
 		})
 		if genErr != nil {
 			fmt.Printf("  警告: 生成 %s %s 用例失败: %v\n", api.Method, api.Path, genErr)
@@ -1106,6 +1195,7 @@ th { background: #f9fafb; font-weight: 600; }
 </div>
 <div class="anomaly-meta">
 <strong>{{.APIMethod}}</strong> {{.APIPath}} | 类型: {{.Type}} | 时间: {{.Timestamp.Format "15:04:05"}}
+{{if .MutationSources}} | 变异来源: <em>{{range $i, $s := .MutationSources}}{{if $i}}, {{end}}{{$s}}{{end}}</em>{{end}}
 </div>
 {{if .Description}}<div class="anomaly-message">{{.Description}}</div>{{end}}
 {{if .MinimalCurl}}<div class="anomaly-curl">{{.MinimalCurl}}</div>{{end}}

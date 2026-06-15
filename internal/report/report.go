@@ -429,6 +429,10 @@ code.inline { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; color: 
                 <div class="description-text">
                   <strong>{{$a.Message}}</strong>
                   {{if $a.Description}}<br><br>{{$a.Description}}{{end}}
+                  {{if $a.MutationSources}}
+                  <br><br><strong>变异来源:</strong>
+                  {{range $idx, $src := $a.MutationSources}}{{if $idx}}, {{end}}<code class="inline">{{$src}}</code>{{end}}
+                  {{end}}
                 </div>
               </div>
             </div>
@@ -548,7 +552,14 @@ code.inline { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; color: 
             <div class="detail-block full">
               <div class="detail-block-header">Anomaly Description</div>
               <div class="detail-block-body">
-                <div class="description-text"><strong>{{$a.Message}}</strong>{{if $a.Description}}<br><br>{{$a.Description}}{{end}}</div>
+                <div class="description-text">
+                  <strong>{{$a.Message}}</strong>
+                  {{if $a.Description}}<br><br>{{$a.Description}}{{end}}
+                  {{if $a.MutationSources}}
+                  <br><br><strong>变异来源:</strong>
+                  {{range $idx, $src := $a.MutationSources}}{{if $idx}}, {{end}}<code class="inline">{{$src}}</code>{{end}}
+                  {{end}}
+                </div>
               </div>
             </div>
             {{if $a.SchemaErrors}}

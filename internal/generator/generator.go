@@ -23,8 +23,9 @@ const (
 )
 
 type GeneratorOptions struct {
-	IncludePaths []string
-	ExcludePaths []string
+	IncludePaths   []string
+	ExcludePaths   []string
+	MutationEngine *mutator.MutationEngine
 }
 
 type paramContext struct {
@@ -328,6 +329,7 @@ type mutTarget struct {
 	BCtx     *bodyFieldContext
 	MutIdx   int
 	MutRes   mutator.MutationResult
+	Source   string
 	Priority int
 }
 
@@ -450,11 +452,12 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 	allParamContexts = append(allParamContexts, headerParamContexts...)
 
 	for _, pc := range allParamContexts {
-		mutations, err := mutator.GetMutations(pc.Schema, pc.Value)
+		mutations, sources, err := getMutationsForParam(opts, pc.Schema, pc.Value, pc.Name, api.Path, string(api.Method))
 		if err != nil {
 			continue
 		}
 		mutations = limitMutations(mutations, defaultMaxMutationPerPath)
+		sources = sources[:len(mutations)]
 		for mi, mr := range mutations {
 			newPathVals := copyMapInterface(pathParamValues)
 			newQueryVals := copyMapInterface(queryParamValues)
@@ -467,6 +470,11 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 				newQueryVals[pc.Name] = mr.Value
 			case types.ParamInHeader:
 				newHeaderVals[pc.Name] = mr.Value
+			}
+
+			source := "builtin"
+			if mi < len(sources) {
+				source = sources[mi]
 			}
 
 			tcID := fmt.Sprintf("%s_%s_mut_s_%s_%d", api.Method, sanitizePath(api.Path), sanitizeName(pc.Path), mi)
@@ -487,26 +495,34 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 					Body:    paramBodyStr,
 					BodyObj: paramBodyObj,
 				},
-				Priority:    pc.Priority,
-				MutatedPath: []string{pc.Path},
-				MutatedDesc: []string{fmt.Sprintf("%s: %s", mr.Target, mr.Description)},
-				Tags:        api.Tags,
+				Priority:        pc.Priority,
+				MutatedPath:     []string{pc.Path},
+				MutatedDesc:     []string{fmt.Sprintf("%s: %s", mr.Target, mr.Description)},
+				MutationSources: []string{source},
+				Tags:            api.Tags,
 			}
 			testCases = append(testCases, tc)
 		}
 	}
 
 	for _, bc := range bodyFieldContexts {
-		mutations, err := mutator.GetMutations(bc.Schema, bc.Value)
+		mutations, sources, err := getMutationsForParam(opts, bc.Schema, bc.Value, bc.Path, api.Path, string(api.Method))
 		if err != nil {
 			continue
 		}
 		mutations = limitMutations(mutations, defaultMaxMutationPerPath)
+		sources = sources[:len(mutations)]
 		for mi, mr := range mutations {
 			newBody, applyErr := applyValueAtPath(bodyValue, bc.Path, mr.Value)
 			if applyErr != nil {
 				continue
 			}
+
+			source := "builtin"
+			if mi < len(sources) {
+				source = sources[mi]
+			}
+
 			tcID := fmt.Sprintf("%s_%s_mut_b_%s_%d", api.Method, sanitizePath(api.Path), sanitizeName(bc.Path), mi)
 			bodyStr, bodyObj := toJSONBody(newBody)
 			tc := &types.TestCase{
@@ -525,10 +541,11 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 					Body:    bodyStr,
 					BodyObj: bodyObj,
 				},
-				Priority:    bc.Priority,
-				MutatedPath: []string{bc.Path},
-				MutatedDesc: []string{fmt.Sprintf("%s: %s", mr.Target, mr.Description)},
-				Tags:        api.Tags,
+				Priority:        bc.Priority,
+				MutatedPath:     []string{bc.Path},
+				MutatedDesc:     []string{fmt.Sprintf("%s: %s", mr.Target, mr.Description)},
+				MutationSources: []string{source},
+				Tags:            api.Tags,
 			}
 			testCases = append(testCases, tc)
 		}
@@ -537,34 +554,46 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 	var allMutTargets []mutTarget
 
 	for _, pc := range allParamContexts {
-		mutations, err := mutator.GetMutations(pc.Schema, pc.Value)
+		mutations, sources, err := getMutationsForParam(opts, pc.Schema, pc.Value, pc.Name, api.Path, string(api.Method))
 		if err != nil {
 			continue
 		}
 		mutations = limitMutations(mutations, defaultMaxMutationPerPath)
+		sources = sources[:len(mutations)]
 		for mi, mr := range mutations {
+			source := "builtin"
+			if mi < len(sources) {
+				source = sources[mi]
+			}
 			allMutTargets = append(allMutTargets, mutTarget{
 				IsBody:   false,
 				PCtx:     pc,
 				MutIdx:   mi,
 				MutRes:   mr,
+				Source:   source,
 				Priority: pc.Priority,
 			})
 		}
 	}
 
 	for _, bc := range bodyFieldContexts {
-		mutations, err := mutator.GetMutations(bc.Schema, bc.Value)
+		mutations, sources, err := getMutationsForParam(opts, bc.Schema, bc.Value, bc.Path, api.Path, string(api.Method))
 		if err != nil {
 			continue
 		}
 		mutations = limitMutations(mutations, defaultMaxMutationPerPath)
+		sources = sources[:len(mutations)]
 		for mi, mr := range mutations {
+			source := "builtin"
+			if mi < len(sources) {
+				source = sources[mi]
+			}
 			allMutTargets = append(allMutTargets, mutTarget{
 				IsBody:   true,
 				BCtx:     bc,
 				MutIdx:   mi,
 				MutRes:   mr,
+				Source:   source,
 				Priority: bc.Priority,
 			})
 		}
@@ -587,6 +616,7 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 
 		mutatedPaths := make([]string, 0, 2)
 		mutatedDescs := make([]string, 0, 2)
+		mutationSources := make([]string, 0, 2)
 		minPriority := priorityRequiredPath
 
 		for _, t := range []mutTarget{t1, t2} {
@@ -596,10 +626,12 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 			if t.IsBody {
 				mutatedPaths = append(mutatedPaths, t.BCtx.Path)
 				mutatedDescs = append(mutatedDescs, fmt.Sprintf("%s: %s", t.MutRes.Target, t.MutRes.Description))
+				mutationSources = append(mutationSources, t.Source)
 				newBody, _ = applyValueAtPath(newBody, t.BCtx.Path, t.MutRes.Value)
 			} else {
 				mutatedPaths = append(mutatedPaths, t.PCtx.Path)
 				mutatedDescs = append(mutatedDescs, fmt.Sprintf("%s: %s", t.MutRes.Target, t.MutRes.Description))
+				mutationSources = append(mutationSources, t.Source)
 				switch t.PCtx.Location {
 				case types.ParamInPath:
 					newPathVals[t.PCtx.Name] = t.MutRes.Value
@@ -634,10 +666,11 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 				Body:    pairBodyStr,
 				BodyObj: pairBodyObj,
 			},
-			Priority:    combinedPriority,
-			MutatedPath: mutatedPaths,
-			MutatedDesc: mutatedDescs,
-			Tags:        api.Tags,
+			Priority:        combinedPriority,
+			MutatedPath:     mutatedPaths,
+			MutatedDesc:     mutatedDescs,
+			MutationSources: mutationSources,
+			Tags:            api.Tags,
 		}
 		testCases = append(testCases, tc)
 	}
@@ -989,6 +1022,34 @@ func limitMutations(mutations []mutator.MutationResult, max int) []mutator.Mutat
 		return mutations
 	}
 	return mutations[:max]
+}
+
+func getMutationsForParam(opts GeneratorOptions, schema *types.Schema, value interface{},
+	paramName, endpoint, method string) ([]mutator.MutationResult, []string, error) {
+
+	if opts.MutationEngine != nil {
+		extResults, err := opts.MutationEngine.GetMutationsExtended(schema, value, paramName, endpoint, method)
+		if err != nil {
+			return nil, nil, err
+		}
+		results := make([]mutator.MutationResult, 0, len(extResults))
+		sources := make([]string, 0, len(extResults))
+		for _, er := range extResults {
+			results = append(results, er.MutationResult)
+			sources = append(sources, er.PluginName)
+		}
+		return results, sources, nil
+	}
+
+	results, err := mutator.GetMutations(schema, value)
+	if err != nil {
+		return nil, nil, err
+	}
+	sources := make([]string, len(results))
+	for i := range sources {
+		sources[i] = "builtin"
+	}
+	return results, sources, nil
 }
 
 func generatePairCombinations(targets []mutTarget, maxPairs int) [][2]mutTarget {

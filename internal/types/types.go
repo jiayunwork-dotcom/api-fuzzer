@@ -299,21 +299,22 @@ type MutationMarker struct {
 }
 
 type TestCase struct {
-	ID              string            `json:"id" yaml:"id"`
-	APISpec         *APISpec          `json:"apiSpec,omitempty" yaml:"apiSpec,omitempty"`
-	APIPath         string            `json:"apiPath" yaml:"apiPath"`
-	APIMethod       HTTPMethod        `json:"apiMethod" yaml:"apiMethod"`
-	Name            string            `json:"name" yaml:"name"`
-	Description     string            `json:"description,omitempty" yaml:"description,omitempty"`
-	Request         *HTTPRequest      `json:"request" yaml:"request"`
-	Auth            []*AuthConfig     `json:"auth,omitempty" yaml:"auth,omitempty"`
-	Priority        int               `json:"priority" yaml:"priority"`
-	Mutated         bool              `json:"mutated,omitempty" yaml:"mutated,omitempty"`
-	MutationMarkers []*MutationMarker `json:"mutationMarkers,omitempty" yaml:"mutationMarkers,omitempty"`
-	MutatedPath     []string          `json:"mutatedPath,omitempty" yaml:"mutatedPath,omitempty"`
-	MutatedDesc     []string          `json:"mutatedDesc,omitempty" yaml:"mutatedDesc,omitempty"`
-	Tags            []string          `json:"tags,omitempty" yaml:"tags,omitempty"`
-	CreatedAt       time.Time         `json:"createdAt,omitempty" yaml:"createdAt,omitempty"`
+	ID               string            `json:"id" yaml:"id"`
+	APISpec          *APISpec          `json:"apiSpec,omitempty" yaml:"apiSpec,omitempty"`
+	APIPath          string            `json:"apiPath" yaml:"apiPath"`
+	APIMethod        HTTPMethod        `json:"apiMethod" yaml:"apiMethod"`
+	Name             string            `json:"name" yaml:"name"`
+	Description      string            `json:"description,omitempty" yaml:"description,omitempty"`
+	Request          *HTTPRequest      `json:"request" yaml:"request"`
+	Auth             []*AuthConfig     `json:"auth,omitempty" yaml:"auth,omitempty"`
+	Priority         int               `json:"priority" yaml:"priority"`
+	Mutated          bool              `json:"mutated,omitempty" yaml:"mutated,omitempty"`
+	MutationMarkers  []*MutationMarker `json:"mutationMarkers,omitempty" yaml:"mutationMarkers,omitempty"`
+	MutatedPath      []string          `json:"mutatedPath,omitempty" yaml:"mutatedPath,omitempty"`
+	MutatedDesc      []string          `json:"mutatedDesc,omitempty" yaml:"mutatedDesc,omitempty"`
+	MutationSources  []string          `json:"mutationSources,omitempty" yaml:"mutationSources,omitempty"`
+	Tags             []string          `json:"tags,omitempty" yaml:"tags,omitempty"`
+	CreatedAt        time.Time         `json:"createdAt,omitempty" yaml:"createdAt,omitempty"`
 }
 
 type AnomalySeverity string
@@ -371,19 +372,20 @@ type LeakPattern struct {
 }
 
 type Anomaly struct {
-	ID              string           `json:"id" yaml:"id"`
-	TestCaseID      string           `json:"testCaseId" yaml:"testCaseId"`
-	Type            AnomalyType      `json:"type" yaml:"type"`
-	Severity        AnomalySeverity  `json:"severity" yaml:"severity"`
-	Message         string           `json:"message" yaml:"message"`
-	Description     string           `json:"description,omitempty" yaml:"description,omitempty"`
-	Request         *HTTPRequest     `json:"request,omitempty" yaml:"request,omitempty"`
-	Response        *HTTPResponse    `json:"response,omitempty" yaml:"response,omitempty"`
-	SchemaErrors    []*SchemaError   `json:"schemaErrors,omitempty" yaml:"schemaErrors,omitempty"`
-	LeakPatterns    []*LeakPattern   `json:"leakPatterns,omitempty" yaml:"leakPatterns,omitempty"`
-	Response2       *HTTPResponse    `json:"response2,omitempty" yaml:"response2,omitempty"`
-	MinimalCurl     string           `json:"minimalCurl,omitempty" yaml:"minimalCurl,omitempty"`
-	APIPath         string           `json:"apiPath,omitempty" yaml:"apiPath,omitempty"`
-	APIMethod       HTTPMethod       `json:"apiMethod,omitempty" yaml:"apiMethod,omitempty"`
-	Timestamp       time.Time        `json:"timestamp" yaml:"timestamp"`
+	ID               string           `json:"id" yaml:"id"`
+	TestCaseID       string           `json:"testCaseId" yaml:"testCaseId"`
+	Type             AnomalyType      `json:"type" yaml:"type"`
+	Severity         AnomalySeverity  `json:"severity" yaml:"severity"`
+	Message          string           `json:"message" yaml:"message"`
+	Description      string           `json:"description,omitempty" yaml:"description,omitempty"`
+	Request          *HTTPRequest     `json:"request,omitempty" yaml:"request,omitempty"`
+	Response         *HTTPResponse    `json:"response,omitempty" yaml:"response,omitempty"`
+	SchemaErrors     []*SchemaError   `json:"schemaErrors,omitempty" yaml:"schemaErrors,omitempty"`
+	LeakPatterns     []*LeakPattern   `json:"leakPatterns,omitempty" yaml:"leakPatterns,omitempty"`
+	Response2        *HTTPResponse    `json:"response2,omitempty" yaml:"response2,omitempty"`
+	MinimalCurl      string           `json:"minimalCurl,omitempty" yaml:"minimalCurl,omitempty"`
+	APIPath          string           `json:"apiPath,omitempty" yaml:"apiPath,omitempty"`
+	APIMethod        HTTPMethod       `json:"apiMethod,omitempty" yaml:"apiMethod,omitempty"`
+	MutationSources  []string         `json:"mutationSources,omitempty" yaml:"mutationSources,omitempty"`
+	Timestamp        time.Time        `json:"timestamp" yaml:"timestamp"`
 }
