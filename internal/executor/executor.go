@@ -18,8 +18,8 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/time/rate"
 
+	detpkg "api-fuzzer/internal/detector"
 	"api-fuzzer/internal/auth"
-	"api-fuzzer/internal/detector"
 	"api-fuzzer/internal/progress"
 	"api-fuzzer/internal/types"
 )
@@ -54,7 +54,7 @@ type Executor struct {
 	semaphore   chan struct{}
 	rateLimiter *rate.Limiter
 	progress    *progress.ProgressBar
-	detector    *detector.Detector
+	det         *detpkg.Detector
 	stateFile   string
 
 	mu            sync.Mutex
@@ -127,8 +127,8 @@ func (e *Executor) SetProgressBar(pb *progress.ProgressBar) {
 	e.progress = pb
 }
 
-func (e *Executor) SetDetector(d *detector.Detector) {
-	e.detector = d
+func (e *Executor) SetDetector(d *detpkg.Detector) {
+	e.det = d
 }
 
 func (e *Executor) SetStateFile(path string) {
@@ -496,12 +496,12 @@ func (e *Executor) executeTestCase(
 		})
 	}
 
-	if e.detector != nil {
+	if e.det != nil {
 		var apiSpec *types.APISpec
 		if tc.APISpec != nil {
 			apiSpec = tc.APISpec
 		}
-		detected, detErr := e.detector.Detect(tc, resp, apiSpec)
+		detected, detErr := e.det.Detect(tc, resp, apiSpec)
 		if detErr == nil && len(detected) > 0 {
 			for _, a := range detected {
 				if a.Request == nil {

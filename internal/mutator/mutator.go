@@ -263,7 +263,7 @@ func (m *ArrayMutator) Mutate(schema *types.Schema, value interface{}) ([]Mutati
 
 	var sampleElement interface{}
 	if schema != nil && schema.Items != nil {
-		switch schema.Items.Type {
+		switch string(schema.Items.Type) {
 		case types.TypeString:
 			sampleElement = "test"
 		case types.TypeInteger:
@@ -308,8 +308,8 @@ func (m *ArrayMutator) Mutate(schema *types.Schema, value interface{}) ([]Mutati
 
 	var wrongTypeElement interface{}
 	itemType := ""
-	if schema.Items != nil {
-		itemType = schema.Items.Type
+	if schema != nil && schema.Items != nil {
+		itemType = string(schema.Items.Type)
 	}
 	switch itemType {
 	case types.TypeString:
@@ -361,7 +361,7 @@ func (m *ObjectMutator) Mutate(schema *types.Schema, value interface{}) ([]Mutat
 		if schema.Properties != nil {
 			for k, v := range schema.Properties {
 				if !utils.Contains(schema.Required, k) {
-					switch v.Type {
+					switch string(v.Type) {
 					case types.TypeString:
 						partialObj[k] = "value"
 					case types.TypeInteger:
@@ -386,7 +386,7 @@ func (m *ObjectMutator) Mutate(schema *types.Schema, value interface{}) ([]Mutat
 	extraFieldsObj := make(map[string]interface{})
 	if schema != nil && schema.Properties != nil {
 		for k, v := range schema.Properties {
-			switch v.Type {
+			switch string(v.Type) {
 			case types.TypeString:
 				extraFieldsObj[k] = "value"
 			case types.TypeInteger:
@@ -412,7 +412,7 @@ func (m *ObjectMutator) Mutate(schema *types.Schema, value interface{}) ([]Mutat
 	wrongTypeObj := make(map[string]interface{})
 	if schema != nil && schema.Properties != nil {
 		for k, v := range schema.Properties {
-			switch v.Type {
+			switch string(v.Type) {
 			case types.TypeString:
 				wrongTypeObj[k] = int64(999)
 			case types.TypeInteger, types.TypeNumber:
@@ -449,7 +449,7 @@ func (m *ObjectMutator) Mutate(schema *types.Schema, value interface{}) ([]Mutat
 	longKeyObj[longKey] = "long_key_value"
 	if schema != nil && schema.Properties != nil {
 		for k, v := range schema.Properties {
-			switch v.Type {
+			switch string(v.Type) {
 			case types.TypeString:
 				longKeyObj[k] = "value"
 			case types.TypeInteger:
@@ -526,7 +526,7 @@ func (m *NullInjector) Mutate(schema *types.Schema, value interface{}) ([]Mutati
 		return results, nil
 	}
 
-	switch schema.Type {
+	switch string(schema.Type) {
 	case types.TypeObject:
 		if schema.Properties != nil && len(schema.Properties) > 0 {
 			for fieldName := range schema.Properties {
@@ -535,7 +535,7 @@ func (m *NullInjector) Mutate(schema *types.Schema, value interface{}) ([]Mutati
 					if k == fieldName {
 						newObj[k] = nil
 					} else {
-						switch v.Type {
+						switch string(v.Type) {
 						case types.TypeString:
 							newObj[k] = "value"
 						case types.TypeInteger:
@@ -616,7 +616,7 @@ func GetMutations(schema *types.Schema, originalValue interface{}) ([]MutationRe
 		return allResults, nil
 	}
 
-	switch schema.Type {
+	switch string(schema.Type) {
 	case types.TypeString:
 		stringMut := NewStringMutator()
 		results, err := stringMut.Mutate(schema, originalValue)

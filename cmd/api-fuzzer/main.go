@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,7 +23,6 @@ import (
 	"api-fuzzer/internal/progress"
 	"api-fuzzer/internal/spec"
 	"api-fuzzer/internal/types"
-	"api-fuzzer/pkg/utils"
 )
 
 const (
@@ -980,6 +978,4 @@ func printSummary(anomalies []*types.Anomaly) {
 		fmt.Printf("总耗时: %s\n", s.Duration)
 	}
 
-	_ = utils.Contains
-	_ = log.Println
 }

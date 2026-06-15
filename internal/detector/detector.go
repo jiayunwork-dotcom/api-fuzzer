@@ -373,13 +373,20 @@ func headersToString(headers map[string]string) string {
 func (d *Detector) detectSlowResponse(testCase *types.TestCase, response *types.HTTPResponse, apiSpec *types.APISpec) []*types.Anomaly {
 	var anomalies []*types.Anomaly
 
-	if d.normalResponseTime < 100*time.Millisecond && response.Duration > 5000*time.Millisecond {
+	threshold := 5 * time.Second
+	if d.normalResponseTime > 0 {
+		dynamicThreshold := d.normalResponseTime * 50
+		if dynamicThreshold > threshold {
+			threshold = dynamicThreshold
+		}
+	}
+	if response.Duration > threshold {
 		anomaly := d.createAnomaly(
 			types.AnomalySlowResponse,
 			types.SeverityMedium,
-			fmt.Sprintf("Response time %v exceeds 5s threshold", response.Duration),
-			fmt.Sprintf("API endpoint %s %s responded in %v, which is significantly slower than the normal threshold of %v",
-				apiSpec.Method, apiSpec.Path, response.Duration, d.normalResponseTime),
+			fmt.Sprintf("Response time %v exceeds threshold of %v", response.Duration, threshold),
+			fmt.Sprintf("API endpoint %s %s responded in %v, which is significantly slower than the normal baseline of %v (dynamic threshold: %v)",
+				apiSpec.Method, apiSpec.Path, response.Duration, d.normalResponseTime, threshold),
 			testCase,
 			response,
 			apiSpec,
@@ -450,4 +457,4 @@ func (d *Detector) createAnomaly(
 	}
 }
 
-var _ = utils.Contains
+

@@ -3,6 +3,7 @@ package spec
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -374,7 +375,7 @@ func LoadOpenAPI(filename string) ([]*types.APISpec, error) {
 }
 
 func loadFileAsNode(filename string) (*yaml.Node, error) {
-	data, err := utils.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, &ParseError{
 			File:     filename,

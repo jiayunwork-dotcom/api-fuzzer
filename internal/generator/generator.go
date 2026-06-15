@@ -345,10 +345,7 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 		return []*types.TestCase{}, nil
 	}
 
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	_ = r
-
-	pathParams, queryParams, headerParams, cookieParams := categorizeParameters(api.Parameters)
+	pathParams, queryParams, headerParams, _ := categorizeParameters(api.Parameters)
 
 	pathParamValues := make(map[string]interface{})
 	pathParamContexts := make([]*paramContext, 0, len(pathParams))
@@ -409,10 +406,6 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 		})
 	}
 
-	_ = cookieParams
-
-	var bodySchema *types.Schema
-	_ = bodySchema
 	var bodyValue interface{}
 	var bodyContentType string
 	var bodyFieldContexts []*bodyFieldContext
@@ -420,7 +413,6 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 	if api.RequestBody != nil && api.RequestBody.Content != nil {
 		for ct, mt := range api.RequestBody.Content {
 			if mt.Schema != nil {
-				bodySchema = mt.Schema
 				bodyContentType = ct
 				bodyValue = GenerateValidValue(mt.Schema)
 				bodyFieldContexts = collectBodyFieldContexts(mt.Schema, bodyValue, ".body", 0)
