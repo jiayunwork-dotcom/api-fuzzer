@@ -19,9 +19,9 @@ import (
 	"golang.org/x/time/rate"
 
 	"api-fuzzer/internal/auth"
+	"api-fuzzer/internal/detector"
 	"api-fuzzer/internal/progress"
 	"api-fuzzer/internal/types"
-	"api-fuzzer/pkg/utils"
 )
 
 const (
@@ -54,6 +54,7 @@ type Executor struct {
 	semaphore   chan struct{}
 	rateLimiter *rate.Limiter
 	progress    *progress.ProgressBar
+	detector    *detector.Detector
 	stateFile   string
 
 	mu            sync.Mutex
@@ -124,6 +125,10 @@ func NewExecutor(cfg *ExecutorConfig) (*Executor, error) {
 
 func (e *Executor) SetProgressBar(pb *progress.ProgressBar) {
 	e.progress = pb
+}
+
+func (e *Executor) SetDetector(d *detector.Detector) {
+	e.detector = d
 }
 
 func (e *Executor) SetStateFile(path string) {

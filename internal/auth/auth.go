@@ -155,3 +155,7 @@ func encodeBasicAuth(username, password string) string {
 	combined := username + ":" + password
 	return base64.StdEncoding.EncodeToString([]byte(combined))
 }
+
+func EncodeBasicAuth(username, password string) string {
+	return encodeBasicAuth(username, password)
+}

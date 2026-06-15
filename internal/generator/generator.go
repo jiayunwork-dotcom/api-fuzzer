@@ -323,6 +323,15 @@ func toJSONBody(v interface{}) (string, interface{}) {
 	}
 }
 
+type mutTarget struct {
+	IsBody   bool
+	PCtx     *paramContext
+	BCtx     *bodyFieldContext
+	MutIdx   int
+	MutRes   mutator.MutationResult
+	Priority int
+}
+
 func GenerateTestCases(api *types.APISpec, maxCasesPerEndpoint int, baseURL string) ([]*types.TestCase, error) {
 	return GenerateTestCasesWithOptions(api, maxCasesPerEndpoint, baseURL, GeneratorOptions{})
 }
@@ -403,6 +412,7 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 	_ = cookieParams
 
 	var bodySchema *types.Schema
+	_ = bodySchema
 	var bodyValue interface{}
 	var bodyContentType string
 	var bodyFieldContexts []*bodyFieldContext
@@ -531,15 +541,6 @@ func GenerateTestCasesWithOptions(api *types.APISpec, maxCasesPerEndpoint int, b
 			}
 			testCases = append(testCases, tc)
 		}
-	}
-
-	type mutTarget struct {
-		IsBody  bool
-		PCtx    *paramContext
-		BCtx    *bodyFieldContext
-		MutIdx  int
-		MutRes  mutator.MutationResult
-		Priority int
 	}
 
 	var allMutTargets []mutTarget

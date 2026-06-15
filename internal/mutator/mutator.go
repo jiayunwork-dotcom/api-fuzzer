@@ -307,7 +307,11 @@ func (m *ArrayMutator) Mutate(schema *types.Schema, value interface{}) ([]Mutati
 	})
 
 	var wrongTypeElement interface{}
-	switch schema.Items != nil && schema.Items.Type {
+	itemType := ""
+	if schema.Items != nil {
+		itemType = schema.Items.Type
+	}
+	switch itemType {
 	case types.TypeString:
 		wrongTypeElement = int64(123)
 	case types.TypeInteger, types.TypeNumber:
