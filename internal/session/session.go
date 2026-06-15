@@ -42,14 +42,13 @@ type SessionConfig struct {
 }
 
 type SessionProgress struct {
-	Status           SessionStatus `json:"status"`
-	TotalCases       int           `json:"totalCases"`
-	CompletedCases   int           `json:"completedCases"`
-	AnomalyCount     int           `json:"anomalyCount"`
-	CurrentCaseID    string        `json:"currentCaseId,omitempty"`
-	StartTime        time.Time     `json:"startTime"`
-	LastUpdateTime   time.Time     `json:"lastUpdateTime"`
-	CompletedCaseIDs []string      `json:"completedCaseIds,omitempty"`
+	Status         SessionStatus `json:"status"`
+	TotalCases     int           `json:"totalCases"`
+	CompletedCases int           `json:"completedCases"`
+	AnomalyCount   int           `json:"anomalyCount"`
+	CurrentCaseID  string        `json:"currentCaseId,omitempty"`
+	StartTime      time.Time     `json:"startTime"`
+	LastUpdateTime time.Time     `json:"lastUpdateTime"`
 }
 
 type CaseManifestEntry struct {
@@ -72,13 +71,15 @@ type Session struct {
 	Progress      *SessionProgress
 	Manifest      *CasesManifest
 
-	mu             sync.Mutex
-	anomalyFile    *os.File
-	anomalyWriter  *bufio.Writer
-	progressFile   string
-	configFile     string
-	anomaliesFile  string
-	manifestFile   string
+	mu               sync.Mutex
+	anomalyFile      *os.File
+	anomalyWriter    *bufio.Writer
+	completedIDsFile *os.File
+	progressFile     string
+	configFile       string
+	anomaliesFile    string
+	manifestFile     string
+	completedIDsPath string
 }
 
 func DefaultSessionRoot() string {
@@ -122,12 +123,13 @@ func New(specPath string, sessionRoot string) (*Session, error) {
 	}
 
 	s := &Session{
-		DirPath:      dirPath,
-		SessionName:  sessionName,
-		configFile:   filepath.Join(dirPath, "config.json"),
-		progressFile: filepath.Join(dirPath, "progress.json"),
-		anomaliesFile: filepath.Join(dirPath, "anomalies.jsonl"),
-		manifestFile: filepath.Join(dirPath, "cases-manifest.json"),
+		DirPath:          dirPath,
+		SessionName:      sessionName,
+		configFile:       filepath.Join(dirPath, "config.json"),
+		progressFile:     filepath.Join(dirPath, "progress.json"),
+		anomaliesFile:    filepath.Join(dirPath, "anomalies.jsonl"),
+		manifestFile:     filepath.Join(dirPath, "cases-manifest.json"),
+		completedIDsPath: filepath.Join(dirPath, "completed-ids.jsonl"),
 		Config: &SessionConfig{
 			SpecPath:     specPath,
 			SpecFileName: filepath.Base(specPath),
@@ -161,12 +163,13 @@ func Load(sessionDir string) (*Session, error) {
 	}
 
 	s := &Session{
-		DirPath:       absPath,
-		SessionName:   filepath.Base(absPath),
-		configFile:    filepath.Join(absPath, "config.json"),
-		progressFile:  filepath.Join(absPath, "progress.json"),
-		anomaliesFile: filepath.Join(absPath, "anomalies.jsonl"),
-		manifestFile:  filepath.Join(absPath, "cases-manifest.json"),
+		DirPath:          absPath,
+		SessionName:      filepath.Base(absPath),
+		configFile:       filepath.Join(absPath, "config.json"),
+		progressFile:     filepath.Join(absPath, "progress.json"),
+		anomaliesFile:    filepath.Join(absPath, "anomalies.jsonl"),
+		manifestFile:     filepath.Join(absPath, "cases-manifest.json"),
+		completedIDsPath: filepath.Join(absPath, "completed-ids.jsonl"),
 	}
 
 	if err := s.loadConfig(); err != nil {
@@ -434,14 +437,67 @@ func (s *Session) UpdateProgress(completed int, currentCaseID string) error {
 }
 
 func (s *Session) IncrementProgress(currentCaseID string) error {
+	if currentCaseID != "" {
+		if err := s.appendCompletedID(currentCaseID); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	s.Progress.CompletedCases++
 	if currentCaseID != "" {
 		s.Progress.CurrentCaseID = currentCaseID
-		s.Progress.CompletedCaseIDs = append(s.Progress.CompletedCaseIDs, currentCaseID)
 	}
 	s.mu.Unlock()
 	return s.SaveProgress()
+}
+
+func (s *Session) appendCompletedID(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.completedIDsFile == nil {
+		f, err := os.OpenFile(s.completedIDsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return fmt.Errorf("open completed-ids file: %w", err)
+		}
+		s.completedIDsFile = f
+	}
+
+	line := id + "\n"
+	if _, err := s.completedIDsFile.WriteString(line); err != nil {
+		return fmt.Errorf("write completed-id: %w", err)
+	}
+	return s.completedIDsFile.Sync()
+}
+
+func (s *Session) CloseCompletedIDsFile() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.completedIDsFile != nil {
+		err := s.completedIDsFile.Close()
+		s.completedIDsFile = nil
+		return err
+	}
+	return nil
+}
+
+func (s *Session) GetCompletedCaseIDs() map[string]struct{} {
+	result := make(map[string]struct{})
+	f, err := os.Open(s.completedIDsPath)
+	if err != nil {
+		return result
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line != "" {
+			result[line] = struct{}{}
+		}
+	}
+	return result
 }
 
 func (s *Session) AddCaseToManifest(tc *types.TestCase) {
@@ -457,14 +513,6 @@ func (s *Session) AddCaseToManifest(tc *types.TestCase) {
 	}
 	s.Manifest.Cases = append(s.Manifest.Cases, entry)
 	s.Manifest.Total = len(s.Manifest.Cases)
-}
-
-func (s *Session) GetCompletedCaseIDs() map[string]struct{} {
-	result := make(map[string]struct{})
-	for _, id := range s.Progress.CompletedCaseIDs {
-		result[id] = struct{}{}
-	}
-	return result
 }
 
 func (s *Session) CanResume() bool {

@@ -64,7 +64,8 @@ type RunConfig struct {
 	DiffTimeThreshold   time.Duration
 	RegressionOut       string
 	SessionDir          string
-	Resume              string
+	Resume              bool
+	ResumeFrom          string
 	ListSessions        bool
 }
 
@@ -200,7 +201,8 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&runCfg.DiffTimeThreshold, "diff-time-threshold", defaultDiffThreshold, "差分测试响应时间阈值 (默认2s)")
 	cmd.Flags().StringVar(&runCfg.RegressionOut, "regression-out", "", "运行结束后保存回归用例到此文件")
 	cmd.Flags().StringVar(&runCfg.SessionDir, "session-dir", session.DefaultSessionRoot(), "会话存储根目录")
-	cmd.Flags().StringVar(&runCfg.Resume, "resume", "", "恢复执行: 不带参数恢复最近一次中断的session; 带参数恢复指定session目录名")
+	cmd.Flags().BoolVar(&runCfg.Resume, "resume", false, "恢复最近一次中断的session")
+	cmd.Flags().StringVar(&runCfg.ResumeFrom, "resume-from", "", "恢复指定session目录名")
 	cmd.Flags().BoolVar(&runCfg.ListSessions, "list-sessions", false, "列出所有历史session及其状态")
 
 	return cmd
@@ -269,21 +271,21 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	var sess *session.Session
 	var isResume bool
 
-	if cmd.Flags().Changed("resume") {
+	if runCfg.Resume || runCfg.ResumeFrom != "" {
 		isResume = true
-		if runCfg.Resume == "" {
-			sess, err = session.FindLatestInterrupted(runCfg.SessionDir)
-			if err != nil {
-				return fmt.Errorf("查找最近中断的session失败: %w", err)
-			}
-		} else {
-			resumePath := runCfg.Resume
+		if runCfg.ResumeFrom != "" {
+			resumePath := runCfg.ResumeFrom
 			if !filepath.IsAbs(resumePath) {
 				resumePath = filepath.Join(runCfg.SessionDir, resumePath)
 			}
 			sess, err = session.Load(resumePath)
 			if err != nil {
 				return fmt.Errorf("加载session失败: %w", err)
+			}
+		} else {
+			sess, err = session.FindLatestInterrupted(runCfg.SessionDir)
+			if err != nil {
+				return fmt.Errorf("查找最近中断的session失败: %w", err)
 			}
 		}
 		if !sess.CanResume() {
@@ -423,7 +425,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  共生成 %d 个测试用例\n", len(allTestCases))
 	sess.Progress.TotalCases = len(allTestCases)
 
-	if isResume && len(sess.Progress.CompletedCaseIDs) > 0 {
+	if isResume && sess.Progress.CompletedCases > 0 {
 		completedSet := sess.GetCompletedCaseIDs()
 		remainingCases := make([]*types.TestCase, 0, len(allTestCases))
 		for _, tc := range allTestCases {
@@ -500,6 +502,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("打开异常写入器失败: %w", err)
 	}
 	defer sess.CloseAnomalyWriter()
+	defer sess.CloseCompletedIDsFile()
 
 	if err := sess.SetStatus(session.StatusRunning); err != nil {
 		fmt.Printf("  警告: 更新session状态失败: %v\n", err)
@@ -514,6 +517,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		_ = sess.SetStatus(session.StatusInterrupted)
 		_ = sess.SaveProgress()
 		_ = sess.CloseAnomalyWriter()
+		_ = sess.CloseCompletedIDsFile()
 		os.Exit(130)
 	}()
 
