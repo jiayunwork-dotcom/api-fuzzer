@@ -350,7 +350,8 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 				totalSkipped++
 				fmt.Printf("  %-7s %-50s  跳过 (无可用参数)\n", s.Method, s.Path)
 			} else {
-				fmt.Printf("  %-7s %-50s %6d  %s\n", s.Method, s.Path, s.Count, bar)
+				countStr := fmt.Sprintf("%d", s.Count)
+				fmt.Printf("  %-7s %-50s %6s  %s\n", s.Method, s.Path, countStr, bar)
 			}
 		}
 		if totalSkipped > 0 {
@@ -551,6 +552,23 @@ func runRegression(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("解析回归用例JSON失败: %w", err)
 	}
 	fmt.Printf("加载完成，共 %d 个回归用例\n", len(testCases))
+
+	var relativeCount int
+	for _, tc := range testCases {
+		if tc == nil || tc.Request == nil {
+			continue
+		}
+		lowerURL := strings.ToLower(strings.TrimSpace(tc.Request.URL))
+		if !strings.HasPrefix(lowerURL, "http://") && !strings.HasPrefix(lowerURL, "https://") {
+			relativeCount++
+		}
+	}
+	if relativeCount > 0 {
+		if regCfg.BaseURL == "" {
+			return fmt.Errorf("回归用例中有 %d 条请求的URL是相对路径(如 /api/xxx)，但未指定 --base-url 参数。请提供目标服务器地址，例如: --base-url https://api.example.com", relativeCount)
+		}
+		fmt.Printf("检测到 %d 条相对路径URL，使用 --base-url=%s 自动补全\n", relativeCount, regCfg.BaseURL)
+	}
 
 	if regCfg.BaseURL != "" {
 		for _, tc := range testCases {
