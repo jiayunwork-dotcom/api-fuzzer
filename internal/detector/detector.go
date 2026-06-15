@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"api-fuzzer/internal/types"
-	"api-fuzzer/pkg/utils"
 )
 
 type Detector struct {

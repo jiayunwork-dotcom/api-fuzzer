@@ -283,6 +283,12 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("[3/6] 生成测试用例\n")
 	var allTestCases []*types.TestCase
+	type endpointStats struct {
+		Method string
+		Path   string
+		Count  int
+	}
+	var perEndpoint []endpointStats
 	for _, api := range filteredSpecs {
 		cases, genErr := generator.GenerateTestCasesWithOptions(api, runCfg.MaxCasesPerEndpoint, baseURL, generator.GeneratorOptions{
 			IncludePaths: runCfg.IncludePaths,
@@ -293,6 +299,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		allTestCases = append(allTestCases, cases...)
+		perEndpoint = append(perEndpoint, endpointStats{string(api.Method), api.Path, len(cases)})
 	}
 
 	sort.Slice(allTestCases, func(i, j int) bool {
@@ -305,13 +312,51 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  共生成 %d 个测试用例\n", len(allTestCases))
 
 	if runCfg.DryRun {
+		sort.Slice(perEndpoint, func(i, j int) bool {
+			if perEndpoint[i].Count != perEndpoint[j].Count {
+				return perEndpoint[i].Count > perEndpoint[j].Count
+			}
+			return perEndpoint[i].Path < perEndpoint[j].Path
+		})
+
 		estimatedSeconds := float64(len(allTestCases)) / float64(runCfg.Concurrency) * 0.5
 		estimatedDuration := time.Duration(estimatedSeconds * float64(time.Second))
 		fmt.Println()
 		fmt.Println("=== Dry Run 模式 ===")
-		fmt.Printf("计划测试用例数: %d\n", len(allTestCases))
+		fmt.Printf("计划测试用例总数: %d\n", len(allTestCases))
+		fmt.Printf("接口数量: %d\n", len(perEndpoint))
 		fmt.Printf("并发数: %d\n", runCfg.Concurrency)
 		fmt.Printf("预计耗时(估算): %v\n", estimatedDuration.Round(time.Second))
+		fmt.Println()
+		fmt.Println("=== 用例按接口分布 ===")
+		maxBarWidth := 40
+		maxCount := 1
+		for _, s := range perEndpoint {
+			if s.Count > maxCount {
+				maxCount = s.Count
+			}
+		}
+		totalSkipped := 0
+		for _, s := range perEndpoint {
+			barLen := 0
+			if s.Count > 0 {
+				barLen = s.Count * maxBarWidth / maxCount
+				if barLen < 1 {
+					barLen = 1
+				}
+			}
+			bar := strings.Repeat("#", barLen)
+			if s.Count == 0 {
+				totalSkipped++
+				fmt.Printf("  %-7s %-50s  跳过 (无可用参数)\n", s.Method, s.Path)
+			} else {
+				fmt.Printf("  %-7s %-50s %6d  %s\n", s.Method, s.Path, s.Count, bar)
+			}
+		}
+		if totalSkipped > 0 {
+			fmt.Printf("\n注: %d 个接口因缺少可用参数被跳过\n", totalSkipped)
+		}
+		fmt.Println()
 		fmt.Println("未实际发送请求")
 		return nil
 	}

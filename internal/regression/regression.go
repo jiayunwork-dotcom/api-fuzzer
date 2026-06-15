@@ -16,7 +16,6 @@ import (
 	"api-fuzzer/internal/auth"
 	"api-fuzzer/internal/detector"
 	"api-fuzzer/internal/types"
-	"api-fuzzer/pkg/utils"
 )
 
 const (
@@ -203,7 +202,6 @@ func RunRegression(
 		}
 	}
 
-	_ = utils.Contains
 	return allAnomalies, results, nil
 }
 

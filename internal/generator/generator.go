@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"api-fuzzer/internal/mutator"
 	"api-fuzzer/internal/types"

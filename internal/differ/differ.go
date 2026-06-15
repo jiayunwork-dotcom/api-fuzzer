@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"golang.org/x/net/http2"
 
 	"api-fuzzer/internal/types"
-	"api-fuzzer/pkg/utils"
 )
 
 const (
@@ -269,7 +267,6 @@ func (d *Differ) compareResponses(tc *types.TestCase, resp1, resp2 *types.HTTPRe
 		anomalies = append(anomalies, anomaly)
 	}
 
-	_ = utils.Contains
 	return anomalies
 }
 
