@@ -20,9 +20,15 @@ type MutationContext = public.MutationContext
 type MutatedValue = public.MutatedValue
 type MutationPlugin = public.MutationPlugin
 type PluginInfo = public.PluginInfo
+type PluginStats = public.PluginStats
+type ReloadResult = public.ReloadResult
 
 const (
 	BuiltinPriority   = public.BuiltinPriority
 	BuiltinPluginName = public.BuiltinPluginName
 	DefaultPluginDir  = public.DefaultPluginDir
 )
+
+func NewPluginStats() *PluginStats {
+	return public.NewPluginStats()
+}
