@@ -50,6 +50,7 @@ type stateFileData struct {
 
 type CaseCompleteCallback func(tc *types.TestCase, completed int, total int)
 type AnomalyCallback func(a *types.Anomaly)
+type HitRecorder func(pluginName string, category string, severity string)
 
 type Executor struct {
 	config      *ExecutorConfig
@@ -62,6 +63,7 @@ type Executor struct {
 
 	caseCompleteCb CaseCompleteCallback
 	anomalyCb      AnomalyCallback
+	hitRecorder    HitRecorder
 
 	mu            sync.Mutex
 	anomalies     []*types.Anomaly
@@ -147,6 +149,10 @@ func (e *Executor) SetCaseCompleteCallback(cb CaseCompleteCallback) {
 
 func (e *Executor) SetAnomalyCallback(cb AnomalyCallback) {
 	e.anomalyCb = cb
+}
+
+func (e *Executor) SetHitRecorder(recorder HitRecorder) {
+	e.hitRecorder = recorder
 }
 
 func (e *Executor) loadState() error {
@@ -297,6 +303,13 @@ func (e *Executor) Run(
 			if testAnomalies != nil && len(testAnomalies) > 0 {
 				for _, a := range testAnomalies {
 					e.addAnomaly(a)
+				}
+				if e.hitRecorder != nil && tc.MutationSourceInfos != nil {
+					for _, si := range tc.MutationSourceInfos {
+						if si != nil {
+							e.hitRecorder(si.PluginName, si.Category, si.Severity)
+						}
+					}
 				}
 				if anomalyCallback != nil {
 					anomalyCallback(tc, resp, testAnomalies)

@@ -298,23 +298,30 @@ type MutationMarker struct {
 	MutationType string     `json:"mutationType" yaml:"mutationType"`
 }
 
+type MutationSourceDetail struct {
+	PluginName string `json:"pluginName" yaml:"pluginName"`
+	Category   string `json:"category" yaml:"category"`
+	Severity   string `json:"severity" yaml:"severity"`
+}
+
 type TestCase struct {
-	ID               string            `json:"id" yaml:"id"`
-	APISpec          *APISpec          `json:"apiSpec,omitempty" yaml:"apiSpec,omitempty"`
-	APIPath          string            `json:"apiPath" yaml:"apiPath"`
-	APIMethod        HTTPMethod        `json:"apiMethod" yaml:"apiMethod"`
-	Name             string            `json:"name" yaml:"name"`
-	Description      string            `json:"description,omitempty" yaml:"description,omitempty"`
-	Request          *HTTPRequest      `json:"request" yaml:"request"`
-	Auth             []*AuthConfig     `json:"auth,omitempty" yaml:"auth,omitempty"`
-	Priority         int               `json:"priority" yaml:"priority"`
-	Mutated          bool              `json:"mutated,omitempty" yaml:"mutated,omitempty"`
-	MutationMarkers  []*MutationMarker `json:"mutationMarkers,omitempty" yaml:"mutationMarkers,omitempty"`
-	MutatedPath      []string          `json:"mutatedPath,omitempty" yaml:"mutatedPath,omitempty"`
-	MutatedDesc      []string          `json:"mutatedDesc,omitempty" yaml:"mutatedDesc,omitempty"`
-	MutationSources  []string          `json:"mutationSources,omitempty" yaml:"mutationSources,omitempty"`
-	Tags             []string          `json:"tags,omitempty" yaml:"tags,omitempty"`
-	CreatedAt        time.Time         `json:"createdAt,omitempty" yaml:"createdAt,omitempty"`
+	ID                  string                 `json:"id" yaml:"id"`
+	APISpec             *APISpec               `json:"apiSpec,omitempty" yaml:"apiSpec,omitempty"`
+	APIPath             string                 `json:"apiPath" yaml:"apiPath"`
+	APIMethod           HTTPMethod             `json:"apiMethod" yaml:"apiMethod"`
+	Name                string                 `json:"name" yaml:"name"`
+	Description         string                 `json:"description,omitempty" yaml:"description,omitempty"`
+	Request             *HTTPRequest           `json:"request" yaml:"request"`
+	Auth                []*AuthConfig          `json:"auth,omitempty" yaml:"auth,omitempty"`
+	Priority            int                    `json:"priority" yaml:"priority"`
+	Mutated             bool                   `json:"mutated,omitempty" yaml:"mutated,omitempty"`
+	MutationMarkers     []*MutationMarker      `json:"mutationMarkers,omitempty" yaml:"mutationMarkers,omitempty"`
+	MutatedPath         []string               `json:"mutatedPath,omitempty" yaml:"mutatedPath,omitempty"`
+	MutatedDesc         []string               `json:"mutatedDesc,omitempty" yaml:"mutatedDesc,omitempty"`
+	MutationSources     []string               `json:"mutationSources,omitempty" yaml:"mutationSources,omitempty"`
+	MutationSourceInfos []*MutationSourceDetail `json:"mutationSourceInfos,omitempty" yaml:"mutationSourceInfos,omitempty"`
+	Tags                []string               `json:"tags,omitempty" yaml:"tags,omitempty"`
+	CreatedAt           time.Time              `json:"createdAt,omitempty" yaml:"createdAt,omitempty"`
 }
 
 type AnomalySeverity string

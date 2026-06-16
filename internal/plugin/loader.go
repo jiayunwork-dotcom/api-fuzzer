@@ -84,6 +84,11 @@ func (l *Loader) Load() ([]*PluginInfo, error) {
 }
 
 func (l *Loader) loadPluginFile(filePath string) (*PluginInfo, error) {
+	fileInfo, statErr := os.Stat(filePath)
+	if statErr != nil {
+		return nil, fmt.Errorf("获取插件文件信息失败: %w", statErr)
+	}
+
 	p, err := plugin.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("打开插件文件失败: %w", err)
@@ -109,6 +114,7 @@ func (l *Loader) loadPluginFile(filePath string) (*PluginInfo, error) {
 		Priority:       instance.Priority(),
 		SupportedTypes: instance.SupportedTypes(),
 		SourceFile:     filePath,
+		ModTime:        fileInfo.ModTime(),
 		Instance:       instance,
 	}
 
@@ -216,4 +222,107 @@ func (l *Loader) RunMutateWithTimeout(p *PluginInfo, ctx MutationContext, timeou
 	case <-time.After(timeout):
 		return nil, true, fmt.Errorf("插件 %s Mutate 方法超时 (%v)", p.Name, timeout)
 	}
+}
+
+type ReloadResult struct {
+	Added   []string
+	Updated []string
+	Removed []string
+	Failed  []string
+}
+
+func (l *Loader) Reload() (*ReloadResult, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	result := &ReloadResult{
+		Added:   make([]string, 0),
+		Updated: make([]string, 0),
+		Removed: make([]string, 0),
+		Failed:  make([]string, 0),
+	}
+
+	oldPluginMap := make(map[string]*PluginInfo)
+	for _, p := range l.plugins {
+		oldPluginMap[p.Name] = p
+	}
+
+	if _, err := os.Stat(l.pluginDir); os.IsNotExist(err) {
+		for name := range oldPluginMap {
+			result.Removed = append(result.Removed, name)
+		}
+		l.plugins = make([]*PluginInfo, 0)
+		return result, nil
+	}
+
+	files, err := filepath.Glob(filepath.Join(l.pluginDir, "*.so"))
+	if err != nil {
+		return nil, fmt.Errorf("扫描插件目录失败: %w", err)
+	}
+
+	newPluginMap := make(map[string]*PluginInfo)
+	loadedNames := make(map[string]bool)
+
+	for _, file := range files {
+		fileInfo, statErr := os.Stat(file)
+		if statErr != nil {
+			continue
+		}
+
+		tempInfo, loadErr := l.loadPluginFile(file)
+		if loadErr != nil {
+			result.Failed = append(result.Failed, filepath.Base(file))
+			fmt.Fprintf(os.Stderr, "警告: 加载插件 %s 失败: %v\n", filepath.Base(file), loadErr)
+			continue
+		}
+
+		if loadedNames[tempInfo.Name] {
+			continue
+		}
+
+		oldInfo, exists := oldPluginMap[tempInfo.Name]
+		if exists {
+			if oldInfo.SourceFile == file && oldInfo.ModTime.Equal(fileInfo.ModTime()) {
+				newPluginMap[tempInfo.Name] = oldInfo
+				loadedNames[tempInfo.Name] = true
+				continue
+			}
+
+			if !tempInfo.Valid {
+				fmt.Fprintf(os.Stderr, "警告: 插件 '%s' 新版本验证失败，保留旧版本继续运行\n", tempInfo.Name)
+				newPluginMap[tempInfo.Name] = oldInfo
+				result.Failed = append(result.Failed, tempInfo.Name)
+				loadedNames[tempInfo.Name] = true
+				continue
+			}
+
+			newPluginMap[tempInfo.Name] = tempInfo
+			result.Updated = append(result.Updated, tempInfo.Name)
+			loadedNames[tempInfo.Name] = true
+		} else {
+			if !tempInfo.Valid {
+				fmt.Fprintf(os.Stderr, "警告: 新插件 '%s' 验证失败，跳过\n", tempInfo.Name)
+				result.Failed = append(result.Failed, tempInfo.Name)
+				continue
+			}
+			newPluginMap[tempInfo.Name] = tempInfo
+			result.Added = append(result.Added, tempInfo.Name)
+			loadedNames[tempInfo.Name] = true
+		}
+	}
+
+	for name := range oldPluginMap {
+		if _, exists := newPluginMap[name]; !exists {
+			result.Removed = append(result.Removed, name)
+		}
+	}
+
+	l.plugins = make([]*PluginInfo, 0, len(newPluginMap))
+	for _, p := range newPluginMap {
+		l.plugins = append(l.plugins, p)
+	}
+
+	l.sortPlugins()
+
+	return result, nil
 }

@@ -95,12 +95,14 @@ type PluginCmdConfig struct {
 }
 
 type ReportData struct {
-	Version     string           `json:"version"`
-	GeneratedAt time.Time        `json:"generatedAt"`
-	Summary     ReportSummary    `json:"summary"`
-	Anomalies   []*types.Anomaly `json:"anomalies"`
-	TestCases   int              `json:"testCases"`
-	Config      interface{}      `json:"config,omitempty"`
+	Version        string                        `json:"version"`
+	GeneratedAt    time.Time                     `json:"generatedAt"`
+	Summary        ReportSummary                 `json:"summary"`
+	Anomalies      []*types.Anomaly              `json:"anomalies"`
+	TestCases      int                           `json:"testCases"`
+	Config         interface{}                   `json:"config,omitempty"`
+	PluginStats    map[string]*plugin.PluginStats `json:"pluginStats,omitempty"`
+	HasExternalPlugins bool                       `json:"hasExternalPlugins"`
 }
 
 type ReportSummary struct {
@@ -270,8 +272,62 @@ func newPluginCmd() *cobra.Command {
 	cmd.AddCommand(newPluginListCmd())
 	cmd.AddCommand(newPluginValidateCmd())
 	cmd.AddCommand(newPluginInitCmd())
+	cmd.AddCommand(newPluginReloadCmd())
 
 	return cmd
+}
+
+func newPluginReloadCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reload",
+		Short: "重新扫描并热重载插件",
+		Long:  "重新扫描插件目录，发现新增、更新或移除的插件，并输出变更摘要。",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			loader := plugin.NewLoader(pluginCfg.Dir)
+			_, err := loader.Load()
+			if err != nil {
+				return fmt.Errorf("初始加载插件失败: %w", err)
+			}
+
+			result, reloadErr := loader.Reload()
+			if reloadErr != nil {
+				return fmt.Errorf("热重载插件失败: %w", reloadErr)
+			}
+
+			fmt.Println("插件热重载完成")
+			fmt.Printf("  新增: %d 个\n", len(result.Added))
+			fmt.Printf("  更新: %d 个\n", len(result.Updated))
+			fmt.Printf("  移除: %d 个\n", len(result.Removed))
+			fmt.Printf("  失败: %d 个\n", len(result.Failed))
+
+			if len(result.Added) > 0 {
+				fmt.Printf("\n新增插件:\n")
+				for _, name := range result.Added {
+					fmt.Printf("  + %s\n", name)
+				}
+			}
+			if len(result.Updated) > 0 {
+				fmt.Printf("\n更新插件:\n")
+				for _, name := range result.Updated {
+					fmt.Printf("  * %s\n", name)
+				}
+			}
+			if len(result.Removed) > 0 {
+				fmt.Printf("\n移除插件:\n")
+				for _, name := range result.Removed {
+					fmt.Printf("  - %s\n", name)
+				}
+			}
+			if len(result.Failed) > 0 {
+				fmt.Printf("\n失败插件:\n")
+				for _, name := range result.Failed {
+					fmt.Printf("  ! %s\n", name)
+				}
+			}
+
+			return nil
+		},
+	}
 }
 
 func newPluginListCmd() *cobra.Command {
@@ -598,16 +654,42 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	}
 
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGUSR1)
 	go func() {
-		<-sigChan
-		fmt.Println()
-		fmt.Println("检测到中断信号，正在保存状态...")
-		_ = sess.SetStatus(session.StatusInterrupted)
-		_ = sess.SaveProgress()
-		_ = sess.CloseAnomalyWriter()
-		_ = sess.CloseCompletedIDsFile()
-		os.Exit(130)
+		for {
+			sig := <-sigChan
+			if sig == syscall.SIGUSR1 {
+				fmt.Println()
+				fmt.Println("检测到 SIGUSR1 信号，正在热重载插件...")
+				result, reloadErr := mutationEngine.ReloadExternalPlugins()
+				if reloadErr != nil {
+					fmt.Printf("  热重载失败: %v\n", reloadErr)
+					continue
+				}
+				fmt.Printf("  热重载完成: 新增 %d 个, 更新 %d 个, 移除 %d 个, 失败 %d 个\n",
+					len(result.Added), len(result.Updated), len(result.Removed), len(result.Failed))
+				if len(result.Added) > 0 {
+					fmt.Printf("  新增插件: %v\n", result.Added)
+				}
+				if len(result.Updated) > 0 {
+					fmt.Printf("  更新插件: %v\n", result.Updated)
+				}
+				if len(result.Removed) > 0 {
+					fmt.Printf("  移除插件: %v\n", result.Removed)
+				}
+				if len(result.Failed) > 0 {
+					fmt.Printf("  失败插件: %v\n", result.Failed)
+				}
+				continue
+			}
+			fmt.Println()
+			fmt.Println("检测到中断信号，正在保存状态...")
+			_ = sess.SetStatus(session.StatusInterrupted)
+			_ = sess.SaveProgress()
+			_ = sess.CloseAnomalyWriter()
+			_ = sess.CloseCompletedIDsFile()
+			os.Exit(130)
+		}
 	}()
 
 	fmt.Printf("[4/6] 执行测试用例\n")
@@ -634,6 +716,9 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	})
 	exec.SetAnomalyCallback(func(a *types.Anomaly) {
 		_ = sess.AppendAnomaly(a)
+	})
+	exec.SetHitRecorder(func(pluginName string, category string, severity string) {
+		mutationEngine.RecordHit(pluginName, category, severity)
 	})
 
 	pb := progress.NewProgressBar(len(allTestCases))
@@ -718,7 +803,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 		outputPath = fmt.Sprintf("./report-%s", timestamp)
 	}
 
-	reportData := buildReportData(validAnomalies, len(allTestCases), runCfg)
+	reportData := buildReportData(validAnomalies, len(allTestCases), runCfg, mutationEngine)
 
 	formats := runCfg.Format
 	if len(formats) == 0 {
@@ -760,6 +845,7 @@ func runFuzz(cmd *cobra.Command, args []string) error {
 	_ = sess.SaveProgress()
 
 	printSummary(validAnomalies)
+	printPluginStats(mutationEngine)
 	fmt.Printf("Session目录: %s\n", sess.DirPath)
 	return nil
 }
@@ -921,7 +1007,7 @@ func runRegression(cmd *cobra.Command, args []string) error {
 		outputPath = fmt.Sprintf("./regression-report-%s", timestamp)
 	}
 
-	reportData := buildReportData(regressionAnomalies, len(testCases), regCfg)
+	reportData := buildReportData(regressionAnomalies, len(testCases), regCfg, nil)
 	formats := regCfg.Format
 	if len(formats) == 0 {
 		formats = []string{"json", "html"}
@@ -1045,8 +1131,8 @@ func filterAPISpecs(specs []*types.APISpec, includePatterns, excludePatterns []s
 	return result
 }
 
-func buildReportData(anomalies []*types.Anomaly, testCases int, cfg interface{}) *ReportData {
-	return &ReportData{
+func buildReportData(anomalies []*types.Anomaly, testCases int, cfg interface{}, engine *mutator.MutationEngine) *ReportData {
+	data := &ReportData{
 		Version:     Version,
 		GeneratedAt: time.Now(),
 		Summary:     buildSummary(anomalies),
@@ -1054,6 +1140,18 @@ func buildReportData(anomalies []*types.Anomaly, testCases int, cfg interface{})
 		TestCases:   testCases,
 		Config:      cfg,
 	}
+
+	if engine != nil {
+		data.PluginStats = engine.GetAllPluginStats()
+		for name := range data.PluginStats {
+			if !strings.HasPrefix(name, "builtin-") && name != "builtin" {
+				data.HasExternalPlugins = true
+				break
+			}
+		}
+	}
+
+	return data
 }
 
 func buildSummary(anomalies []*types.Anomaly) ReportSummary {
@@ -1135,6 +1233,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .info .value { color: #6b7280; }
 .section { background: white; border-radius: 8px; padding: 24px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .section h2 { font-size: 20px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 2px solid #eee; }
+.section h3 { font-size: 16px; margin: 16px 0 12px 0; color: #555; }
 .anomaly { border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
 .anomaly-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
@@ -1143,14 +1242,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .badge-medium { background: #fef3c7; color: #d97706; }
 .badge-low { background: #dbeafe; color: #2563eb; }
 .badge-info { background: #f3f4f6; color: #6b7280; }
+.badge-warning { background: #fef3c7; color: #92400e; }
 .anomaly-title { font-weight: 600; font-size: 16px; }
 .anomaly-meta { font-size: 13px; color: #666; margin-bottom: 8px; }
 .anomaly-message { background: #f9fafb; padding: 12px; border-radius: 6px; margin-bottom: 8px; font-family: monospace; font-size: 13px; }
 .anomaly-curl { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
 .details { margin-top: 8px; font-size: 13px; color: #555; }
-table { width: 100%; border-collapse: collapse; }
-th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; font-size: 14px; }
 th { background: #f9fafb; font-weight: 600; }
+.warning-note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: 12px; margin-top: 12px; border-radius: 4px; font-size: 14px; color: #92400e; }
 .empty { text-align: center; padding: 40px; color: #888; }
 </style>
 </head>
@@ -1211,9 +1312,111 @@ th { background: #f9fafb; font-weight: 600; }
 <div class="empty">没有发现异常</div>
 {{end}}
 </div>
+{{if .PluginStats}}
+<div class="section">
+<h2>插件效能分析</h2>
+
+<h3>插件统计详情</h3>
+<table>
+<tr><th>插件名</th><th>调用次数</th><th>成功率</th><th>平均耗时(ms)</th><th>产出数</th><th>命中数</th><th>命中率</th><th>状态</th></tr>
+{{range pluginStatsSorted .PluginStats}}
+<tr>
+<td>{{.Name}}</td>
+<td>{{.Stats.CallCount}}</td>
+<td>{{printf "%.1f%%" .Stats.SuccessRatePercent}}</td>
+<td>{{.Stats.AvgTimeMsInt}}</td>
+<td>{{.Stats.OutputCount}}</td>
+<td>{{.Stats.HitCount}}</td>
+<td>{{printf "%.2f%%" .Stats.HitRatePercent}}</td>
+<td>{{if .Stats.SuggestDisable}}<span class="badge badge-warning">建议禁用</span>{{end}}</td>
+</tr>
+{{end}}
+</table>
+
+{{if categoryStats .PluginStats}}
+<h3>按 Category 维度统计</h3>
+<table>
+<tr><th>Category</th><th>产出数</th><th>命中数</th><th>命中率</th></tr>
+{{range categoryStats .PluginStats}}
+<tr>
+<td>{{.Category}}</td>
+<td>{{.OutputCount}}</td>
+<td>{{.HitCount}}</td>
+<td>{{printf "%.2f%%" .HitRate}}</td>
+</tr>
+{{end}}
+</table>
+{{end}}
+
+{{if severityStats .PluginStats}}
+<h3>按 Severity 维度统计</h3>
+<table>
+<tr><th>Severity</th><th>产出数</th><th>命中数</th><th>命中率</th></tr>
+{{range severityStats .PluginStats}}
+<tr>
+<td>{{.Severity}}</td>
+<td>{{.OutputCount}}</td>
+<td>{{.HitCount}}</td>
+<td>{{printf "%.2f%%" .HitRate}}</td>
+</tr>
+{{end}}
+</table>
+{{end}}
+
+{{if .HasExternalPlugins}}
+<h3>外部插件 vs 内置变异器</h3>
+<table>
+<tr><th>类型</th><th>总产出</th><th>总命中</th><th>平均命中率</th></tr>
+{{with builtinVsExternal .PluginStats}}
+<tr>
+<td>内置变异器</td>
+<td>{{.BuiltinOutput}}</td>
+<td>{{.BuiltinHits}}</td>
+<td>{{printf "%.2f%%" .BuiltinHitRate}}</td>
+</tr>
+<tr>
+<td>外部插件</td>
+<td>{{.ExternalOutput}}</td>
+<td>{{.ExternalHits}}</td>
+<td>{{printf "%.2f%%" .ExternalHitRate}}</td>
+</tr>
+{{end}}
+</table>
+{{end}}
+
+</div>
+{{end}}
 </div>
 </body>
 </html>`
+
+type pluginStatView struct {
+	Name  string
+	Stats *plugin.PluginStats
+}
+
+type categoryStat struct {
+	Category    string
+	OutputCount int64
+	HitCount    int64
+	HitRate     float64
+}
+
+type severityStat struct {
+	Severity    string
+	OutputCount int64
+	HitCount    int64
+	HitRate     float64
+}
+
+type builtinExternalComparison struct {
+	BuiltinOutput   int64
+	BuiltinHits     int64
+	BuiltinHitRate  float64
+	ExternalOutput  int64
+	ExternalHits    int64
+	ExternalHitRate float64
+}
 
 func saveHTMLReport(path string, data *ReportData) error {
 	dir := filepath.Dir(path)
@@ -1237,6 +1440,93 @@ func saveHTMLReport(path string, data *ReportData) error {
 			default:
 				return "info"
 			}
+		},
+		"pluginStatsSorted": func(stats map[string]*plugin.PluginStats) []pluginStatView {
+			result := make([]pluginStatView, 0, len(stats))
+			for name, stat := range stats {
+				result = append(result, pluginStatView{Name: name, Stats: stat})
+			}
+			sort.Slice(result, func(i, j int) bool {
+				return result[i].Stats.HitRate() > result[j].Stats.HitRate()
+			})
+			return result
+		},
+		"categoryStats": func(stats map[string]*plugin.PluginStats) []categoryStat {
+			catMap := make(map[string]*categoryStat)
+			for _, stat := range stats {
+				for cat, output := range stat.CategoryOutputs {
+					if _, ok := catMap[cat]; !ok {
+						catMap[cat] = &categoryStat{Category: cat}
+					}
+					catMap[cat].OutputCount += output
+				}
+				for cat, hits := range stat.CategoryHits {
+					if _, ok := catMap[cat]; !ok {
+						catMap[cat] = &categoryStat{Category: cat}
+					}
+					catMap[cat].HitCount += hits
+				}
+			}
+			result := make([]categoryStat, 0, len(catMap))
+			for _, cs := range catMap {
+				if cs.OutputCount > 0 {
+					cs.HitRate = float64(cs.HitCount) / float64(cs.OutputCount) * 100
+				}
+				result = append(result, *cs)
+			}
+			sort.Slice(result, func(i, j int) bool {
+				return result[i].HitRate > result[j].HitRate
+			})
+			return result
+		},
+		"severityStats": func(stats map[string]*plugin.PluginStats) []severityStat {
+			sevMap := make(map[string]*severityStat)
+			for _, stat := range stats {
+				for sev, output := range stat.SeverityOutputs {
+					sevStr := string(sev)
+					if _, ok := sevMap[sevStr]; !ok {
+						sevMap[sevStr] = &severityStat{Severity: sevStr}
+					}
+					sevMap[sevStr].OutputCount += output
+				}
+				for sev, hits := range stat.SeverityHits {
+					sevStr := string(sev)
+					if _, ok := sevMap[sevStr]; !ok {
+						sevMap[sevStr] = &severityStat{Severity: sevStr}
+					}
+					sevMap[sevStr].HitCount += hits
+				}
+			}
+			result := make([]severityStat, 0, len(sevMap))
+			for _, ss := range sevMap {
+				if ss.OutputCount > 0 {
+					ss.HitRate = float64(ss.HitCount) / float64(ss.OutputCount) * 100
+				}
+				result = append(result, *ss)
+			}
+			sort.Slice(result, func(i, j int) bool {
+				return result[i].HitRate > result[j].HitRate
+			})
+			return result
+		},
+		"builtinVsExternal": func(stats map[string]*plugin.PluginStats) builtinExternalComparison {
+			var comp builtinExternalComparison
+			for name, stat := range stats {
+				if strings.HasPrefix(name, "builtin-") || name == "builtin" {
+					comp.BuiltinOutput += stat.OutputCount
+					comp.BuiltinHits += stat.HitCount
+				} else {
+					comp.ExternalOutput += stat.OutputCount
+					comp.ExternalHits += stat.HitCount
+				}
+			}
+			if comp.BuiltinOutput > 0 {
+				comp.BuiltinHitRate = float64(comp.BuiltinHits) / float64(comp.BuiltinOutput) * 100
+			}
+			if comp.ExternalOutput > 0 {
+				comp.ExternalHitRate = float64(comp.ExternalHits) / float64(comp.ExternalOutput) * 100
+			}
+			return comp
 		},
 	}
 
@@ -1317,6 +1607,60 @@ func printSummary(anomalies []*types.Anomaly) {
 		fmt.Printf("总耗时: %s\n", s.Duration)
 	}
 
+}
+
+func printPluginStats(engine *mutator.MutationEngine) {
+	if engine == nil {
+		return
+	}
+
+	statsMap := engine.GetAllPluginStats()
+	if len(statsMap) == 0 {
+		return
+	}
+
+	type pluginStat struct {
+		name  string
+		stats *plugin.PluginStats
+	}
+	statsList := make([]pluginStat, 0, len(statsMap))
+	for name, stats := range statsMap {
+		statsList = append(statsList, pluginStat{name, stats})
+	}
+
+	sort.Slice(statsList, func(i, j int) bool {
+		return statsList[i].stats.HitRate() > statsList[j].stats.HitRate()
+	})
+
+	fmt.Println()
+	fmt.Println("=== 插件效能统计 ===")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "插件名\t调用次数\t成功率\t平均耗时(ms)\t产出数\t命中数\t命中率")
+	fmt.Fprintln(w, strings.Repeat("-", 80))
+
+	for _, ps := range statsList {
+		s := ps.stats
+		successRate := 0.0
+		if s.CallCount > 0 {
+			successRate = float64(s.SuccessCount) / float64(s.CallCount) * 100
+		}
+		avgTime := int64(0)
+		if s.CallCount > 0 {
+			avgTime = s.TotalTimeMs / s.CallCount
+		}
+		hitRate := 0.0
+		if s.OutputCount > 0 {
+			hitRate = float64(s.HitCount) / float64(s.OutputCount) * 100
+		}
+		note := ""
+		if s.HitCount == 0 && s.CallCount > 10 {
+			note = "  [建议禁用]"
+		}
+		fmt.Fprintf(w, "%s\t%d\t%.1f%%\t%d\t%d\t%d\t%.2f%%%s\n",
+			ps.name, s.CallCount, successRate, avgTime, s.OutputCount, s.HitCount, hitRate, note)
+	}
+
+	w.Flush()
 }
 
 func printSessionsList(sessionRoot string) error {

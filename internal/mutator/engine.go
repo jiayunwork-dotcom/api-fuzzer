@@ -1,8 +1,10 @@
 package mutator
 
 import (
+	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"api-fuzzer/internal/plugin"
@@ -253,15 +255,18 @@ func getBuiltinPlugins() []*plugin.PluginInfo {
 }
 
 type MutationEngine struct {
-	loader          *plugin.Loader
-	allPlugins      []*plugin.PluginInfo
-	timeoutPerCall  time.Duration
+	loader         *plugin.Loader
+	allPlugins     []*plugin.PluginInfo
+	timeoutPerCall time.Duration
+	stats          map[string]*plugin.PluginStats
+	statsMu        sync.RWMutex
 }
 
 func NewMutationEngine(loader *plugin.Loader) *MutationEngine {
 	me := &MutationEngine{
 		loader:         loader,
 		timeoutPerCall: 5 * time.Second,
+		stats:          make(map[string]*plugin.PluginStats),
 	}
 	me.rebuildPluginList()
 	return me
@@ -285,16 +290,77 @@ func (me *MutationEngine) rebuildPluginList() {
 	})
 }
 
-func (me *MutationEngine) ReloadExternalPlugins() error {
+func (me *MutationEngine) ReloadExternalPlugins() (*plugin.ReloadResult, error) {
 	if me.loader == nil {
-		return nil
+		return &plugin.ReloadResult{}, nil
 	}
-	_, err := me.loader.Load()
+	result, err := me.loader.Reload()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	me.rebuildPluginList()
-	return nil
+	return result, nil
+}
+
+func (me *MutationEngine) getStatsLocked(pluginName string) *plugin.PluginStats {
+	if stats, ok := me.stats[pluginName]; ok {
+		return stats
+	}
+	stats := plugin.NewPluginStats()
+	me.stats[pluginName] = stats
+	return stats
+}
+
+func (me *MutationEngine) GetPluginStats(pluginName string) *plugin.PluginStats {
+	me.statsMu.RLock()
+	defer me.statsMu.RUnlock()
+
+	if stats, ok := me.stats[pluginName]; ok {
+		return stats
+	}
+	return plugin.NewPluginStats()
+}
+
+func (me *MutationEngine) GetAllPluginStats() map[string]*plugin.PluginStats {
+	me.statsMu.RLock()
+	defer me.statsMu.RUnlock()
+
+	result := make(map[string]*plugin.PluginStats, len(me.stats))
+	for k, v := range me.stats {
+		statsCopy := *v
+		statsCopy.CategoryHits = make(map[string]int64)
+		for ck, cv := range v.CategoryHits {
+			statsCopy.CategoryHits[ck] = cv
+		}
+		statsCopy.CategoryOutputs = make(map[string]int64)
+		for ck, cv := range v.CategoryOutputs {
+			statsCopy.CategoryOutputs[ck] = cv
+		}
+		statsCopy.SeverityHits = make(map[plugin.MutationSeverity]int64)
+		for sk, sv := range v.SeverityHits {
+			statsCopy.SeverityHits[sk] = sv
+		}
+		statsCopy.SeverityOutputs = make(map[plugin.MutationSeverity]int64)
+		for sk, sv := range v.SeverityOutputs {
+			statsCopy.SeverityOutputs[sk] = sv
+		}
+		result[k] = &statsCopy
+	}
+	return result
+}
+
+func (me *MutationEngine) RecordHit(pluginName string, category string, severity string) {
+	me.statsMu.Lock()
+	defer me.statsMu.Unlock()
+
+	stats := me.getStatsLocked(pluginName)
+	stats.HitCount++
+	if category != "" {
+		stats.CategoryHits[category]++
+	}
+	if severity != "" {
+		stats.SeverityHits[plugin.MutationSeverity(severity)]++
+	}
 }
 
 func (me *MutationEngine) findMatchingPlugins(paramType string) []*plugin.PluginInfo {
@@ -350,12 +416,13 @@ func (me *MutationEngine) GetMutationsExtended(schema *types.Schema, originalVal
 		var values []plugin.MutatedValue
 		var err error
 		var timedOut bool
+		startTime := time.Now()
 
 		if p.SourceFile == "builtin" {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						err = r.(error)
+						err = fmt.Errorf("%v", r)
 					}
 				}()
 				values = p.Instance.Mutate(ctx)
@@ -367,13 +434,34 @@ func (me *MutationEngine) GetMutationsExtended(schema *types.Schema, originalVal
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							err = r.(error)
+							err = fmt.Errorf("%v", r)
 						}
 					}()
 					values = p.Instance.Mutate(ctx)
 				}()
 			}
 		}
+
+		elapsedMs := time.Since(startTime).Milliseconds()
+		me.statsMu.Lock()
+		stats := me.getStatsLocked(p.Name)
+		stats.CallCount++
+		stats.TotalTimeMs += elapsedMs
+		if err != nil {
+			stats.FailureCount++
+		} else {
+			stats.SuccessCount++
+			stats.OutputCount += int64(len(values))
+			for _, v := range values {
+				if v.Category != "" {
+					stats.CategoryOutputs[v.Category]++
+				}
+				if v.Severity != "" {
+					stats.SeverityOutputs[v.Severity]++
+				}
+			}
+		}
+		me.statsMu.Unlock()
 
 		if err != nil {
 			if timedOut {
