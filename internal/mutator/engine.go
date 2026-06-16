@@ -229,9 +229,9 @@ func (me *MutationEngine) GetMutationsExtended(schema *types.Schema, originalVal
 
 		if err != nil {
 			if timedOut {
-				os.Stderr.WriteString([]byte("警告: 插件 " + p.Name + " 执行超时，已跳过\n"))
+				os.Stderr.WriteString("警告: 插件 " + p.Name + " 执行超时，已跳过\n")
 			} else {
-				os.Stderr.WriteString([]byte("警告: 插件 " + p.Name + " 执行失败: " + err.Error() + "\n"))
+				os.Stderr.WriteString("警告: 插件 " + p.Name + " 执行失败: " + err.Error() + "\n")
 			}
 			continue
 		}
