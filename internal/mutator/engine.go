@@ -9,6 +9,154 @@ import (
 	"api-fuzzer/internal/types"
 )
 
+func schemaToPlugin(s *types.Schema) *plugin.Schema {
+	if s == nil {
+		return nil
+	}
+	return &plugin.Schema{
+		Type:                 s.Type,
+		Format:               s.Format,
+		Title:                s.Title,
+		Description:          s.Description,
+		Default:              s.Default,
+		Example:              s.Example,
+		Enum:                 s.Enum,
+		Const:                s.Const,
+		MultipleOf:           s.MultipleOf,
+		Maximum:              s.Maximum,
+		ExclusiveMaximum:     s.ExclusiveMaximum,
+		Minimum:              s.Minimum,
+		ExclusiveMinimum:     s.ExclusiveMinimum,
+		MaxLength:            s.MaxLength,
+		MinLength:            s.MinLength,
+		Pattern:              s.Pattern,
+		MaxItems:             s.MaxItems,
+		MinItems:             s.MinItems,
+		UniqueItems:          s.UniqueItems,
+		MaxProperties:        s.MaxProperties,
+		MinProperties:        s.MinProperties,
+		Required:             s.Required,
+		Items:                schemaToPlugin(s.Items),
+		Properties:           schemaMapToPlugin(s.Properties),
+		AdditionalProperties: schemaToPlugin(s.AdditionalProperties),
+		AllOf:                schemaSliceToPlugin(s.AllOf),
+		AnyOf:                schemaSliceToPlugin(s.AnyOf),
+		OneOf:                schemaSliceToPlugin(s.OneOf),
+		Not:                  schemaToPlugin(s.Not),
+		Ref:                  s.Ref,
+		Nullable:             s.Nullable,
+		ReadOnly:             s.ReadOnly,
+		WriteOnly:            s.WriteOnly,
+		Discriminator:        discriminatorToPlugin(s.Discriminator),
+	}
+}
+
+func schemaMapToPlugin(m map[string]*types.Schema) map[string]*plugin.Schema {
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]*plugin.Schema, len(m))
+	for k, v := range m {
+		result[k] = schemaToPlugin(v)
+	}
+	return result
+}
+
+func schemaSliceToPlugin(s []*types.Schema) []*plugin.Schema {
+	if s == nil {
+		return nil
+	}
+	result := make([]*plugin.Schema, len(s))
+	for i, v := range s {
+		result[i] = schemaToPlugin(v)
+	}
+	return result
+}
+
+func discriminatorToPlugin(d *types.Discriminator) *plugin.Discriminator {
+	if d == nil {
+		return nil
+	}
+	return &plugin.Discriminator{
+		PropertyName: d.PropertyName,
+		Mapping:      d.Mapping,
+	}
+}
+
+func schemaToInternal(s *plugin.Schema) *types.Schema {
+	if s == nil {
+		return nil
+	}
+	return &types.Schema{
+		Type:                 s.Type,
+		Format:               s.Format,
+		Title:                s.Title,
+		Description:          s.Description,
+		Default:              s.Default,
+		Example:              s.Example,
+		Enum:                 s.Enum,
+		Const:                s.Const,
+		MultipleOf:           s.MultipleOf,
+		Maximum:              s.Maximum,
+		ExclusiveMaximum:     s.ExclusiveMaximum,
+		Minimum:              s.Minimum,
+		ExclusiveMinimum:     s.ExclusiveMinimum,
+		MaxLength:            s.MaxLength,
+		MinLength:            s.MinLength,
+		Pattern:              s.Pattern,
+		MaxItems:             s.MaxItems,
+		MinItems:             s.MinItems,
+		UniqueItems:          s.UniqueItems,
+		MaxProperties:        s.MaxProperties,
+		MinProperties:        s.MinProperties,
+		Required:             s.Required,
+		Items:                schemaToInternal(s.Items),
+		Properties:           schemaMapToInternal(s.Properties),
+		AdditionalProperties: schemaToInternal(s.AdditionalProperties),
+		AllOf:                schemaSliceToInternal(s.AllOf),
+		AnyOf:                schemaSliceToInternal(s.AnyOf),
+		OneOf:                schemaSliceToInternal(s.OneOf),
+		Not:                  schemaToInternal(s.Not),
+		Ref:                  s.Ref,
+		Nullable:             s.Nullable,
+		ReadOnly:             s.ReadOnly,
+		WriteOnly:            s.WriteOnly,
+		Discriminator:        discriminatorToInternal(s.Discriminator),
+	}
+}
+
+func schemaMapToInternal(m map[string]*plugin.Schema) map[string]*types.Schema {
+	if m == nil {
+		return nil
+	}
+	result := make(map[string]*types.Schema, len(m))
+	for k, v := range m {
+		result[k] = schemaToInternal(v)
+	}
+	return result
+}
+
+func schemaSliceToInternal(s []*plugin.Schema) []*types.Schema {
+	if s == nil {
+		return nil
+	}
+	result := make([]*types.Schema, len(s))
+	for i, v := range s {
+		result[i] = schemaToInternal(v)
+	}
+	return result
+}
+
+func discriminatorToInternal(d *plugin.Discriminator) *types.Discriminator {
+	if d == nil {
+		return nil
+	}
+	return &types.Discriminator{
+		PropertyName: d.PropertyName,
+		Mapping:      d.Mapping,
+	}
+}
+
 type builtinMutatorPlugin struct {
 	name        string
 	priority    int
@@ -29,7 +177,7 @@ func (b *builtinMutatorPlugin) SupportedTypes() []string {
 }
 
 func (b *builtinMutatorPlugin) Mutate(ctx plugin.MutationContext) []plugin.MutatedValue {
-	results, err := b.mutateFn(ctx.Schema, ctx.CurrentValue)
+	results, err := b.mutateFn(schemaToInternal(ctx.Schema), ctx.CurrentValue)
 	if err != nil {
 		return nil
 	}
@@ -190,7 +338,7 @@ func (me *MutationEngine) GetMutationsExtended(schema *types.Schema, originalVal
 	ctx := plugin.MutationContext{
 		ParamName:    paramName,
 		ParamType:    paramType,
-		Schema:       schema,
+		Schema:       schemaToPlugin(schema),
 		CurrentValue: originalValue,
 		Endpoint:     endpoint,
 		Method:       method,

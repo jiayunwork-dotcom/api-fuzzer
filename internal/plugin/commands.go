@@ -12,7 +12,7 @@ import (
 const pluginTemplate = `package main
 
 import (
-	"api-fuzzer/internal/plugin"
+	"api-fuzzer/pkg/plugin"
 )
 
 type {{.StructName}} struct{}
@@ -54,10 +54,31 @@ func NewPlugin() plugin.MutationPlugin {
 
 const buildInstructions = `
 # 编译插件说明
-# 1. 将此文件保存为 <name>.go
-# 2. 使用以下命令编译为 .so 插件:
-#    go build -buildmode=plugin -o <name>.so <name>.go
-# 3. 将生成的 <name>.so 放入插件目录 (默认为 .api-fuzzer-plugins/)
+
+## 方式一：在 api-fuzzer 项目内编译（推荐，最简单）
+
+# 1. 在此目录下直接编译:
+#    go build -buildmode=plugin -o {{.PluginName}}.so {{.PluginName}}.go
+# 2. 完成！{{.PluginName}}.so 已在当前目录，可直接被 api-fuzzer 加载
+
+## 方式二：在外部独立目录编译
+
+# 1. 创建插件目录并初始化 go.mod:
+#    mkdir my-plugins && cd my-plugins
+#    go mod init my-plugins
+#
+# 2. 添加 api-fuzzer 依赖（替换为实际路径）:
+#    go mod edit -replace api-fuzzer=/path/to/api-fuzzer
+#    go get api-fuzzer@v0.0.0
+#
+# 3. 将 {{.PluginName}}.go 复制到当前目录，然后编译:
+#    go build -buildmode=plugin -o {{.PluginName}}.so {{.PluginName}}.go
+#
+# 4. 将 {{.PluginName}}.so 复制到 api-fuzzer 的插件目录:
+#    cp {{.PluginName}}.so /path/to/api-fuzzer/.api-fuzzer-plugins/
+
+## 注意：Go plugin 仅支持 Linux 和 macOS，不支持 Windows
+#       Windows 用户请使用 WSL 或交叉编译到 Linux 环境
 `
 
 type templateData struct {
@@ -122,8 +143,19 @@ func CreatePluginTemplate(pluginDir, name string) error {
 
 	readmePath := filepath.Join(pluginDir, "BUILD.md")
 	if _, err := os.Stat(readmePath); os.IsNotExist(err) {
-		if err := os.WriteFile(readmePath, []byte(buildInstructions), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "警告: 创建构建说明失败: %v\n", err)
+		buildTmpl, err := template.New("build").Parse(buildInstructions)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "警告: 解析构建模板失败: %v\n", err)
+		} else {
+			f, err := os.Create(readmePath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "警告: 创建构建说明失败: %v\n", err)
+			} else {
+				defer f.Close()
+				if err := buildTmpl.Execute(f, data); err != nil {
+					fmt.Fprintf(os.Stderr, "警告: 写入构建说明失败: %v\n", err)
+				}
+			}
 		}
 	}
 
